@@ -1,5 +1,7 @@
 package org.ignis.scheduler;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.ignis.scheduler.IScheduler;
 import org.ignis.scheduler.ISchedulerException;
 import org.ignis.scheduler.ISchedulerUtils;
@@ -44,6 +46,7 @@ public class Cloud implements IScheduler {
     private static final String TF_BIN_PROP = "ignis.terraform.bin";
     private static final String TF_RESOURCE_DIR = "terraform";
     private static boolean CLEANUP_WORKDIR = true;
+    private Map<String, String> terraformOutputs = new HashMap<>();
 
     /*private static final String SUBNET_ID = "subnet-97e34da82877256a3";
     private static final String SECURITY_GROUP_ID = "sg-1800963b8c7b84d1f";
@@ -54,8 +57,8 @@ public class Cloud implements IScheduler {
     //private final String securityGroupId;
     /*private final Ec2Client ec2Client;*/
 
-    public Cloud(String url) throws ISchedulerException{
-        /*this.url = url;
+    /* Esto estaba en el constructor */
+      /*this.url = url;
         this.ec2Client = Ec2Client.builder()
                 .endpointOverride(URI.create(url))
                 .region(Region.US_EAST_1)
@@ -68,6 +71,9 @@ public class Cloud implements IScheduler {
         System.out.println("Subnet: " + SUBNET_ID);
         System.out.println("SG: " + SECURITY_GROUP_ID);
         System.out.println("*****************************************\n");*/
+
+    public Cloud(String url) throws ISchedulerException{
+
         System.out.println("\n*****************************************");
         System.out.println("URL: " + url);
         System.out.println("*****************************************\n");
@@ -75,6 +81,7 @@ public class Cloud implements IScheduler {
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
         runTerraform();
+
     }
 
     private void runTerraform()  throws ISchedulerException {
@@ -89,7 +96,7 @@ public class Cloud implements IScheduler {
 
             copyClasspathDirectoryTo(workDir);
 
-            Path tfStateDir = workDir.resolve(".terraform");
+            /*Path tfStateDir = workDir.resolve(".terraform");
             if (Files.exists(tfStateDir)) {
                 LOGGER.info("Cleaning up temporary directory: {}", tfStateDir.toString());
                 deleteDirectoryRecursively(tfStateDir);
@@ -99,10 +106,12 @@ public class Cloud implements IScheduler {
             if (Files.exists(lockFile)) {
                 LOGGER.info("Removing previous lock file");
                 Files.delete(lockFile);
-            }
+            }*/
 
             executeCommand(workDir.toString(), terraformBin, "init", "-input=false");
             executeCommand(workDir.toString(), terraformBin, "apply", "-auto-approve", "-input=false");
+
+            captureTerraformOutputs(workDir.toString(), terraformBin);
 
             LOGGER.info("Terraform infrastructure applied successfully.");
         } catch (ISchedulerException e){
@@ -217,6 +226,72 @@ public class Cloud implements IScheduler {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ISchedulerException("Interrupted", e);
+        }
+    }
+
+    private void captureTerraformOutputs(String workDir, String terraformBin) throws ISchedulerException {
+        LOGGER.info("Capturing Terraform outputs in directory {}", workDir);
+
+        try{
+            ProcessBuilder pb = new ProcessBuilder(terraformBin, "output", "-json");
+            if(workDir != null) {
+                pb.directory(new File(workDir));
+            }
+
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+
+            StringBuilder jsonOutput = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    jsonOutput.append(line);
+                }
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                throw new ISchedulerException("Command failed with exit code " + exitCode + ": ");
+            }
+
+            String json = jsonOutput.toString().trim();
+            if(json.isEmpty()) {
+                throw new ISchedulerException("Terraform output was not captured: " + json);
+            }
+
+            var root = parseJson(json);
+
+            terraformOutputs.put("subnet_id", getOutputValue(root, "subnet_id"));
+            terraformOutputs.put("sg_id", getOutputValue(root, "sg_id"));
+            terraformOutputs.put("vpc_id", getOutputValue(root, "vpc_id"));
+            terraformOutputs.put("iam_role_arn", getOutputValue(root, "iam_role_arn"));
+
+            // AMI, Bucket...
+
+            terraformOutputs.forEach((llave, valor) -> System.out.println(llave + " : " + valor));
+
+        } catch (Exception e){
+            LOGGER.error("Failed to capture Terraform outputs in directory {}", workDir, e);
+            throw new ISchedulerException("Failed to capture Terraform outputs in directory", e);
+        }
+
+    }
+
+    private String getOutputValue(JsonNode root, String outputName) {
+        JsonNode node = root.path(outputName).path("value");
+        if (node.isMissingNode() || node.isNull()) {
+            LOGGER.warn("Output '{}' no encontrado o nulo", outputName);
+            return null;
+        }
+        return node.asText();
+    }
+
+    private JsonNode parseJson(String json) throws ISchedulerException {
+        try {
+            var mapper = new ObjectMapper();
+            return mapper.readTree(json);
+        } catch (IOException ex) {
+            throw new ISchedulerException(ex.getMessage(), ex);
         }
     }
 
