@@ -7,15 +7,17 @@ import org.ignis.scheduler.model.IClusterInfo;
 import org.ignis.scheduler.model.IClusterRequest;
 import org.ignis.scheduler.model.IContainerInfo;
 import org.ignis.scheduler.model.IJobInfo;
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.InputStreamReader;
 
-import java.io.IOException;
+import java.io.*;
+
+import java.net.URL;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.util.*;
+import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 
 import org.slf4j.LoggerFactory;
@@ -34,9 +36,15 @@ import software.amazon.awssdk.services.ec2.model.TagSpecification;
 import software.amazon.awssdk.services.ec2.model.ResourceType;
 
 import java.net.URI; // Necesario para LocalStack
+import java.util.stream.Stream;
 
 public class Cloud implements IScheduler {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
+
+    private static final String TF_BIN_PROP = "ignis.terraform.bin";
+    private static final String TF_RESOURCE_DIR = "terraform";
+    private static boolean CLEANUP_WORKDIR = true;
+
     /*private static final String SUBNET_ID = "subnet-97e34da82877256a3";
     private static final String SECURITY_GROUP_ID = "sg-1800963b8c7b84d1f";
     private static final String AMI_ID = "ami-df570af1";*/
@@ -64,57 +72,120 @@ public class Cloud implements IScheduler {
         System.out.println("URL: " + url);
         System.out.println("*****************************************\n");
 
-        LOGGER.info("Initializing Cloud scheduler at: " + url);
+        LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
         runTerraform();
     }
 
     private void runTerraform()  throws ISchedulerException {
-        String terraformDir  = "/home/ruben/TFG/ignis-project/core-base/scheduler-cloud/terraform";
         LOGGER.info("Starting infrastructure provisioning via Terraform...");
 
+        //String terraformDir  = "/home/ruben/TFG/ignis-project/core-base/scheduler-cloud/terraform";
+        String terraformBin = System.getProperty(TF_BIN_PROP, "terraform");
+
+        Path workDir = null;
+
         try {
-            executeCommand(terraformDir, "/usr/bin/terraform", "init");
-            executeCommand(terraformDir, "/usr/bin/terraform", "apply", "-auto-approve");
+            workDir = Files.createTempDirectory("ignis-terraform-");
+            LOGGER.debug("Creating temporary directory: {}", workDir.toString());
+
+            copyClasspathDirectoryTo(workDir);
+
+            executeCommand(workDir.toString(), terraformBin, "init", "-input=false");
+            executeCommand(workDir.toString(), terraformBin, "apply", "-auto-approve", "-input=false");
+
             LOGGER.info("Terraform infrastructure applied successfully.");
         } catch (ISchedulerException e){
-            LOGGER.error("Failed to provision infrastructure: " + e.getMessage());
+            LOGGER.error("Failed to provision infrastructure: {}", e.getMessage());
             throw e;
+        } catch (IOException e){
+            throw new ISchedulerException("Failed to prepare or cleanup Terraform directory", e);
+        } finally {
+            if (CLEANUP_WORKDIR && workDir != null && Files.exists(workDir)) {
+                try{
+                    System.out.println("Cleaning up temporary directory: " + workDir.toString());
+                    deleteDirectoryRecursively(workDir);
+                } catch (IOException e){
+                    LOGGER.warn("Cleanup failed for {}", workDir, e);
+                }
+            }
         }
     }
 
-   /* private void executeCommand(String dir, String... command) throws ISchedulerException {
-        try {
-            String fullCommand = String.join(" ", command);
-            LOGGER.info("Executing command: " + fullCommand);
-
-            ProcessBuilder pb = new ProcessBuilder(command);
-            pb.directory(new java.io.File(dir));
-            pb.inheritIO();
-
-            Process process = pb.start();
-            int exitCode = process.waitFor();
-
-            if (exitCode != 0) {
-                throw new ISchedulerException("External command failed with exit code " + exitCode + ": " + command[0]);
-            }
-        } catch (IOException e) {
-            throw new ISchedulerException("I/O error while executing Terraform. Is it installed?", e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ISchedulerException("Terraform execution was unexpectedly interrupted.", e);
+    private void copyClasspathDirectoryTo(Path destination) throws IOException {
+        ClassLoader cl = getClass().getClassLoader();
+        URL url = cl.getResource(TF_RESOURCE_DIR);
+        if (url == null) {
+            throw new IOException("Cannot find resource " + TF_RESOURCE_DIR);
         }
-    }*/
+        if (!url.getProtocol().equals("jar")) {
+            throw new IOException("Cannot find resource " + TF_RESOURCE_DIR);
+        }
+        String jarPath = url.toString().split("!")[0].substring("jar:".length());
+        String prefix = TF_RESOURCE_DIR + "/";
+        jarPath = jarPath.substring(5);
+
+        String urlStr = url.toString();
+        String jarUrlPart = urlStr.substring(0, urlStr.indexOf("!/"));
+
+        if (jarUrlPart.startsWith("jar:file:")) {
+            jarPath = jarUrlPart.substring("jar:file:".length());
+        } else {
+            throw new IOException("Unexpected JAR URL format: " + urlStr);
+        }
+
+        try(JarFile jar = new JarFile(jarPath)) {
+            jar.stream()
+                    .filter(entry -> entry.getName().startsWith(prefix))
+                    .forEach(entry -> {
+                       try {
+                           String relPath = entry.getName().substring(prefix.length());
+                           if(relPath.isEmpty()) {
+                               return;
+                           }
+                           Path target = destination.resolve(relPath);
+                           if(entry.isDirectory()) {
+                               Files.createDirectories(target);
+                           } else {
+                               Files.createDirectories(target.getParent());
+                               try (InputStream is = jar.getInputStream(entry)) {
+                                   Files.copy(is, target, StandardCopyOption.REPLACE_EXISTING);
+                               }
+                           }
+                       } catch (IOException e) {
+                           throw new UncheckedIOException(e);
+                       }
+                    });
+        }
+    }
+
+    private static void deleteDirectoryRecursively(Path dir) throws IOException {
+        if (!Files.exists(dir)) {
+            return;
+        }
+
+        try (Stream<Path> paths = Files.walk(dir)) {
+            paths.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.delete(path);
+                        } catch (IOException e) {
+                            LOGGER.warn("Failed to delete file: {}", path, e);
+                        }
+                    });
+        }
+    }
 
     private void executeCommand(String dir, String... command) throws ISchedulerException {
         try {
             String fullCommand = String.join(" ", command);
-            LOGGER.info("Executing command: " + fullCommand + " in directory: " + dir);
+            LOGGER.info("Executing command {} in directory {}", fullCommand, dir);
 
             ProcessBuilder pb = new ProcessBuilder(command);
-            pb.directory(new File(dir));
+            if(dir != null) {
+                pb.directory(new File(dir));
+            }
 
-            // ¡Muy importante! Redirigir error y salida para capturar el mensaje real
             pb.redirectErrorStream(true);
             Process process = pb.start();
 
@@ -131,9 +202,7 @@ public class Cloud implements IScheduler {
                 throw new ISchedulerException("Command failed with exit code " + exitCode + ": " + fullCommand);
             }
         } catch (IOException e) {
-            // ¡Imprime el stacktrace completo y la causa!
-            e.printStackTrace();
-            LOGGER.error("Real IOException message: " + e.getMessage(), e);
+            LOGGER.error("Real IOException message: {}", e.getMessage(), e);
             throw new ISchedulerException("I/O error executing: " + String.join(" ", command) + " → " + e.getMessage(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
