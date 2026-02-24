@@ -80,9 +80,7 @@ public class Cloud implements IScheduler {
     private void runTerraform()  throws ISchedulerException {
         LOGGER.info("Starting infrastructure provisioning via Terraform...");
 
-        //String terraformDir  = "/home/ruben/TFG/ignis-project/core-base/scheduler-cloud/terraform";
         String terraformBin = System.getProperty(TF_BIN_PROP, "terraform");
-
         Path workDir = null;
 
         try {
@@ -90,6 +88,18 @@ public class Cloud implements IScheduler {
             LOGGER.debug("Creating temporary directory: {}", workDir.toString());
 
             copyClasspathDirectoryTo(workDir);
+
+            Path tfStateDir = workDir.resolve(".terraform");
+            if (Files.exists(tfStateDir)) {
+                LOGGER.info("Cleaning up temporary directory: {}", tfStateDir.toString());
+                deleteDirectoryRecursively(tfStateDir);
+            }
+
+            Path lockFile = workDir.resolve(".terraform.lock.hcl");
+            if (Files.exists(lockFile)) {
+                LOGGER.info("Removing previous lock file");
+                Files.delete(lockFile);
+            }
 
             executeCommand(workDir.toString(), terraformBin, "init", "-input=false");
             executeCommand(workDir.toString(), terraformBin, "apply", "-auto-approve", "-input=false");
@@ -99,11 +109,12 @@ public class Cloud implements IScheduler {
             LOGGER.error("Failed to provision infrastructure: {}", e.getMessage());
             throw e;
         } catch (IOException e){
+            LOGGER.error("Failed to prepare or cleanup Terraform directory", e);
             throw new ISchedulerException("Failed to prepare or cleanup Terraform directory", e);
         } finally {
             if (CLEANUP_WORKDIR && workDir != null && Files.exists(workDir)) {
                 try{
-                    System.out.println("Cleaning up temporary directory: " + workDir.toString());
+                    LOGGER.info("Cleaning up temporary directory: {}", workDir.toString());
                     deleteDirectoryRecursively(workDir);
                 } catch (IOException e){
                     LOGGER.warn("Cleanup failed for {}", workDir, e);
@@ -189,7 +200,6 @@ public class Cloud implements IScheduler {
             pb.redirectErrorStream(true);
             Process process = pb.start();
 
-            // Leer salida/error en tiempo real (opcional pero útil)
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
