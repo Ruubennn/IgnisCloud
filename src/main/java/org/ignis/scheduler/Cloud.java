@@ -13,6 +13,7 @@ import org.ignis.scheduler.model.IJobInfo;
 import java.io.*;
 
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -23,19 +24,17 @@ import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.services.ec2.model.ResourceType;
-import software.amazon.awssdk.services.ec2.model.Tag;
-import software.amazon.awssdk.services.ec2.model.TagSpecification;
-import software.amazon.awssdk.services.ec2.model.RunInstancesRequest;
-import software.amazon.awssdk.services.ec2.model.RunInstancesResponse;
-import software.amazon.awssdk.services.ec2.model.InstanceType;
+import software.amazon.awssdk.services.ec2.model.*;
 import software.amazon.awssdk.services.ec2.model.Tag;
 import software.amazon.awssdk.services.ec2.model.TagSpecification;
 import software.amazon.awssdk.services.ec2.model.ResourceType;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import java.net.URI; // Necesario para LocalStack
 import java.util.stream.Stream;
@@ -47,30 +46,6 @@ public class Cloud implements IScheduler {
     private static final String TF_RESOURCE_DIR = "terraform";
     private static boolean CLEANUP_WORKDIR = true;
     private Map<String, String> terraformOutputs = new HashMap<>();
-
-    /*private static final String SUBNET_ID = "subnet-97e34da82877256a3";
-    private static final String SECURITY_GROUP_ID = "sg-1800963b8c7b84d1f";
-    private static final String AMI_ID = "ami-df570af1";*/
-
-    /*private final String url;*/
-    //private final String subnetId;
-    //private final String securityGroupId;
-    /*private final Ec2Client ec2Client;*/
-
-    /* Esto estaba en el constructor */
-      /*this.url = url;
-        this.ec2Client = Ec2Client.builder()
-                .endpointOverride(URI.create(url))
-                .region(Region.US_EAST_1)
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create("test", "test")))
-                .build();
-
-        System.out.println("\n*****************************************");
-        System.out.println("¡CONECTADO A LOCALSTACK!");
-        System.out.println("Subnet: " + SUBNET_ID);
-        System.out.println("SG: " + SECURITY_GROUP_ID);
-        System.out.println("*****************************************\n");*/
 
     public Cloud(String url) throws ISchedulerException{
 
@@ -95,18 +70,6 @@ public class Cloud implements IScheduler {
             LOGGER.debug("Creating temporary directory: {}", workDir.toString());
 
             copyClasspathDirectoryTo(workDir);
-
-            /*Path tfStateDir = workDir.resolve(".terraform");
-            if (Files.exists(tfStateDir)) {
-                LOGGER.info("Cleaning up temporary directory: {}", tfStateDir.toString());
-                deleteDirectoryRecursively(tfStateDir);
-            }
-
-            Path lockFile = workDir.resolve(".terraform.lock.hcl");
-            if (Files.exists(lockFile)) {
-                LOGGER.info("Removing previous lock file");
-                Files.delete(lockFile);
-            }*/
 
             executeCommand(workDir.toString(), terraformBin, "init", "-input=false");
             executeCommand(workDir.toString(), terraformBin, "apply", "-auto-approve", "-input=false");
@@ -265,10 +228,11 @@ public class Cloud implements IScheduler {
             terraformOutputs.put("sg_id", getOutputValue(root, "sg_id"));
             terraformOutputs.put("vpc_id", getOutputValue(root, "vpc_id"));
             terraformOutputs.put("iam_role_arn", getOutputValue(root, "iam_role_arn"));
+            terraformOutputs.put("jobs_bucket_name", getOutputValue(root, "jobs_bucket_name"));
 
             // AMI, Bucket...
 
-            terraformOutputs.forEach((llave, valor) -> System.out.println(llave + " : " + valor));
+            //terraformOutputs.forEach((llave, valor) -> System.out.println(llave + " : " + valor));
 
         } catch (Exception e){
             LOGGER.error("Failed to capture Terraform outputs in directory {}", workDir, e);
@@ -295,54 +259,97 @@ public class Cloud implements IScheduler {
         }
     }
 
-
-    /*private String runEc2Instance(String jobName, IClusterRequest request) throws ISchedulerException {
+    private String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam) throws ISchedulerException {
         try {
-            // 1. Preparamos la etiqueta con el nombre (equivalente al bloque 'tags' de tu Terraform)
-            Tag nameTag = Tag.builder()
-                    .key("Name")
-                    .value(jobName)
+            Ec2Client ec2 = Ec2Client.builder()
+                    .endpointOverride(URI.create("http://localhost:4566"))
+                    .region(Region.US_WEST_2)
+                    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")))
                     .build();
 
-            TagSpecification tagSpecification = TagSpecification.builder()
-                    .resourceType(ResourceType.INSTANCE)
-                    .tags(nameTag)
-                    .build();
-
-            // 2. Creamos la petición de lanzamiento (equivalente a tu resource "aws_instance")
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
-                    .imageId(AMI_ID)
-                    // Usamos el Enum correspondiente en lugar de un String a machete
+                    .imageId("ami-df570af1")
                     .instanceType(InstanceType.T2_MICRO)
                     .maxCount(1)
                     .minCount(1)
-                    .subnetId(SUBNET_ID)
-                    .securityGroupIds(SECURITY_GROUP_ID)
-                    .tagSpecifications(tagSpecification)
+                    .subnetId(subnet)
+                    .securityGroupIds(sgId)
+                    .iamInstanceProfile(IamInstanceProfileSpecification.builder()
+                            .arn(iam)
+                            .build())
+                    /*TODO: analizar*/              .userData(Base64.getEncoder().encodeToString(userDataScript.getBytes(StandardCharsets.UTF_8)))
+                    .tagSpecifications(TagSpecification.builder()
+                            .resourceType(ResourceType.INSTANCE)
+                            .tags(Tag.builder().key("Name").value(instanceName).build(),
+                                    Tag.builder().key("JobName").value(instanceName.split("-")[0]).build())
+                            .build())
                     .build();
 
-            // 3. Ejecutamos la orden en LocalStack
-            RunInstancesResponse response = ec2Client.runInstances(runRequest);
+            RunInstancesResponse response = ec2.runInstances(runRequest);
+            String instanceId = response.instances().get(0).instanceId(); // TODO: se pueden lanzar múltiples instancias? Debería permitirlo?
 
-            // 4. Obtenemos el ID de la instancia creada
-            String instanceId = response.instances().get(0).instanceId();
-            System.out.println("[AWS-SDK] Instancia desplegada con éxito. ID: " + instanceId);
-
+            LOGGER.info("Instance launched: {}", instanceId);
             return instanceId;
-
-        } catch (Exception e) {
-            LOGGER.error("Error al interactuar con el SDK de AWS", e);
-            throw new ISchedulerException("No se pudo levantar la instancia en LocalStack: " + e.getMessage());
+        }catch (Exception e){
+            LOGGER.error("Failed to create EC2 instance", e);
+            throw new ISchedulerException("Failed to create EC2 instance", e);
         }
-    }*/
+    }
+
+    private S3Client getClient() {
+        return S3Client.builder()
+                .endpointOverride(URI.create("http://localhost:4566"))
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")))
+                .build();
+
+    }
+
+    private String uploadToS3(String bucket, String jobId, String fileName, byte[] data) throws ISchedulerException {
+        if (data == null || data.length == 0) {
+            throw new ISchedulerException("Data is empty to upload to S3");
+        }
+        if(fileName == null || fileName.trim().isEmpty()) {
+            throw new ISchedulerException("File name is empty to upload to S3");
+        }
+        
+        String key = "jobs/" + jobId + "/" + fileName;
+        S3Client s3Client = getClient();
+        try{
+            PutObjectRequest put = PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(key)
+                    .build();
+
+            s3Client.putObject(put, RequestBody.fromBytes(data));
+            return key;
+
+        }catch (Exception e){
+            LOGGER.error("Failed to upload To S3", e);
+            throw new ISchedulerException("Failed to upload To S3", e);
+        }
+    }
 
     @Override
     public String createJob(String name, IClusterRequest driver, IClusterRequest... executors) throws ISchedulerException {
-        // 1. Generamos el ID del Job como hace Docker.java
+
         String jobId = ISchedulerUtils.genId().substring(0, 8);
         String finalJobName = name.replace("/", "-") + "-" + jobId;
 
-        System.out.println("[CLOUD] Lanzando instancia para el Driver: " + finalJobName);
+        LOGGER.info("Creating job with name {} and id {}", finalJobName, jobId);
+
+        if(terraformOutputs.isEmpty()) {
+            throw new ISchedulerException("Terraform output was not captured: " + finalJobName);
+        }
+
+        String subnet = terraformOutputs.get("subnet_id");
+        String sg = terraformOutputs.get("sg_id");
+        String iamRoleArn = terraformOutputs.get("iam_role_arn");
+        String bucket = terraformOutputs.get("jobs_bucket_name");
+
+        if(subnet == null || sg == null || iamRoleArn == null || bucket == null) {
+            throw new ISchedulerException("Terraform outputs not found");
+        }
 
         try {
             // Aquí llamaremos al método que creará la instancia en AWS

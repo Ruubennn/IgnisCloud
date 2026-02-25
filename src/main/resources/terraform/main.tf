@@ -10,7 +10,7 @@ provider "aws" {
     ec2             = "http://localhost:4566"
     networkmanager  = "http://localhost:4566"
     iam             = "http://localhost:4566"
-    s3              = "http://localhost:4566"
+    s3  = "http://s3.localhost.localstack.cloud:4566"
     sts             = "http://localhost:4566"
   }
 }
@@ -91,6 +91,30 @@ resource "aws_security_group" "ignis_sg" {
   }
 }
 
+resource "random_string" "bucket_suffix" {
+  length = 8
+  special = false
+  upper = false
+}
+
+// S3
+resource "aws_s3_bucket" "ignis_jobs" {
+  bucket = "ignis-jobs-${random_string.bucket_suffix.result}"
+  tags = {
+    Name = "ignis-jobs-bucket"
+  }
+}
+
+// S3 Block
+resource "aws_s3_bucket_public_access_block" "ignis_jobs" {
+  bucket = aws_s3_bucket.ignis_jobs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 // IAM Role
 resource "aws_iam_role" "ignis_scheduler_role" {
   name = "ignis-scheduler-role"
@@ -121,6 +145,22 @@ resource "aws_iam_role_policy" "ignis_scheduler_policy" {
         "ec2:CreateTags"
       ]
       Resource = "*"
+    }]
+  })
+}
+
+// IAM Role to the instances to download from S3
+resource "aws_iam_role_policy" "ignis_s3_access" {
+  name = "ignis-s3-access"
+  role = aws_iam_role.ignis_scheduler_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "s3:GetObject"
+      ]
+      Resource = "arn:aws:s3:::${aws_s3_bucket.ignis_jobs.bucket}/*"
     }]
   })
 }
