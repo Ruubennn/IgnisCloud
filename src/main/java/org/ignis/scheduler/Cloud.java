@@ -43,10 +43,12 @@ public class Cloud implements IScheduler {
     private static final String CLOUD_BIND_ROOT = "ignis/dfs";
     private static final String CLOUD_PAYLOAD_DIR = "/ignis/dfs/payload";
 
-    private static final String TF_BIN_PROP = "ignis.terraform.bin";
-    private static final String TF_RESOURCE_DIR = "terraform";
-    private static boolean CLEANUP_WORKDIR = true;
-    private Map<String, String> terraformOutputs = new HashMap<>();
+    private final TerraformManager terraformManager;
+    private final AwsFactory awsFactory;
+    private final EC2Operations ec2;
+    /*private final S3Operations s3;
+    private final UserDataBuilder userDataBuilder;
+    private final BundleCreator bundleCreator;*/
 
 
     public Cloud(String url) throws ISchedulerException{
@@ -57,98 +59,18 @@ public class Cloud implements IScheduler {
 
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
-        runTerraform();
+        this.terraformManager = new TerraformManager();
+        this.awsFactory = new AwsFactory();
+        this.ec2 = new EC2Operations(awsFactory);
 
-    }
+        this.terraformManager.provision();
 
-    private void runTerraform()  throws ISchedulerException {
-        LOGGER.info("Starting infrastructure provisioning via Terraform...");
-
-        String terraformBin = System.getProperty(TF_BIN_PROP, "terraform");
-        Path workDir = null;
-
-        try {
-            workDir = Files.createTempDirectory("ignis-terraform-");
-            LOGGER.debug("Creating temporary directory: {}", workDir.toString());
-
-            copyClasspathDirectoryTo(workDir);
-
-            executeCommand(workDir.toString(), terraformBin, "init", "-input=false");
-            executeCommand(workDir.toString(), terraformBin, "apply", "-auto-approve", "-input=false");
-
-            captureTerraformOutputs(workDir.toString(), terraformBin);
-
-            LOGGER.info("Terraform infrastructure applied successfully.");
-        } catch (ISchedulerException e){
-            LOGGER.error("Failed to provision infrastructure: {}", e.getMessage());
-            throw e;
-        } catch (IOException e){
-            LOGGER.error("Failed to prepare or cleanup Terraform directory", e);
-            throw new ISchedulerException("Failed to prepare or cleanup Terraform directory", e);
-        } finally {
-            if (CLEANUP_WORKDIR && workDir != null && Files.exists(workDir)) {
-                try{
-                    LOGGER.info("Cleaning up temporary directory: {}", workDir.toString());
-                    deleteDirectoryRecursively(workDir);
-                } catch (IOException e){
-                    LOGGER.warn("Cleanup failed for {}", workDir, e);
-                }
-            }
-        }
-    }
-
-    private void copyClasspathDirectoryTo(Path destination) throws IOException {
-        ClassLoader cl = getClass().getClassLoader();
-        URL url = cl.getResource(TF_RESOURCE_DIR);
-        if (url == null) {
-            throw new IOException("Cannot find resource " + TF_RESOURCE_DIR);
-        }
-        if (!url.getProtocol().equals("jar")) {
-            throw new IOException("Cannot find resource " + TF_RESOURCE_DIR);
-        }
-        String jarPath = url.toString().split("!")[0].substring("jar:".length());
-        String prefix = TF_RESOURCE_DIR + "/";
-        jarPath = jarPath.substring(5);
-
-        String urlStr = url.toString();
-        String jarUrlPart = urlStr.substring(0, urlStr.indexOf("!/"));
-
-        if (jarUrlPart.startsWith("jar:file:")) {
-            jarPath = jarUrlPart.substring("jar:file:".length());
-        } else {
-            throw new IOException("Unexpected JAR URL format: " + urlStr);
-        }
-
-        try(JarFile jar = new JarFile(jarPath)) {
-            jar.stream()
-                    .filter(entry -> entry.getName().startsWith(prefix))
-                    .forEach(entry -> {
-                       try {
-                           String relPath = entry.getName().substring(prefix.length());
-                           if(relPath.isEmpty()) {
-                               return;
-                           }
-                           Path target = destination.resolve(relPath);
-                           if(entry.isDirectory()) {
-                               Files.createDirectories(target);
-                           } else {
-                               Files.createDirectories(target.getParent());
-                               try (InputStream is = jar.getInputStream(entry)) {
-                                   Files.copy(is, target, StandardCopyOption.REPLACE_EXISTING);
-                               }
-                           }
-                       } catch (IOException e) {
-                           throw new UncheckedIOException(e);
-                       }
-                    });
-        }
     }
 
     private static void deleteDirectoryRecursively(Path dir) throws IOException {
         if (!Files.exists(dir)) {
             return;
         }
-
         try (Stream<Path> paths = Files.walk(dir)) {
             paths.sorted(Comparator.reverseOrder())
                     .forEach(path -> {
@@ -161,181 +83,12 @@ public class Cloud implements IScheduler {
         }
     }
 
-    private void executeCommand(String dir, String... command) throws ISchedulerException {
-        try {
-            String fullCommand = String.join(" ", command);
-            LOGGER.info("Executing command {} in directory {}", fullCommand, dir);
-
-            ProcessBuilder pb = new ProcessBuilder(command);
-            if(dir != null) {
-                pb.directory(new File(dir));
-            }
-
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    System.out.println("[Terraform out] " + line);
-                }
-            }
-
-            int exitCode = process.waitFor();
-            if (exitCode != 0) {
-                throw new ISchedulerException("Command failed with exit code " + exitCode + ": " + fullCommand);
-            }
-        } catch (IOException e) {
-            LOGGER.error("Real IOException message: {}", e.getMessage(), e);
-            throw new ISchedulerException("I/O error executing: " + String.join(" ", command) + " → " + e.getMessage(), e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ISchedulerException("Interrupted", e);
-        }
-    }
-
-    private void captureTerraformOutputs(String workDir, String terraformBin) throws ISchedulerException {
-        LOGGER.info("Capturing Terraform outputs in directory {}", workDir);
-
-        try{
-            ProcessBuilder pb = new ProcessBuilder(terraformBin, "output", "-json");
-            if(workDir != null) {
-                pb.directory(new File(workDir));
-            }
-
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-
-            StringBuilder jsonOutput = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    jsonOutput.append(line);
-                }
-            }
-
-            int exitCode = process.waitFor();
-            if (exitCode != 0) {
-                throw new ISchedulerException("Command failed with exit code " + exitCode + ": ");
-            }
-
-            String json = jsonOutput.toString().trim();
-            if(json.isEmpty()) {
-                throw new ISchedulerException("Terraform output was not captured: " + json);
-            }
-
-            var root = parseJson(json);
-
-            terraformOutputs.put("subnet_id", getOutputValue(root, "subnet_id"));
-            terraformOutputs.put("sg_id", getOutputValue(root, "sg_id"));
-            terraformOutputs.put("vpc_id", getOutputValue(root, "vpc_id"));
-            terraformOutputs.put("iam_role_arn", getOutputValue(root, "iam_role_arn"));
-            terraformOutputs.put("jobs_bucket_name", getOutputValue(root, "jobs_bucket_name"));
-
-            // AMI, Bucket...
-
-            //terraformOutputs.forEach((llave, valor) -> System.out.println(llave + " : " + valor));
-
-        } catch (Exception e){
-            LOGGER.error("Failed to capture Terraform outputs in directory {}", workDir, e);
-            throw new ISchedulerException("Failed to capture Terraform outputs in directory", e);
-        }
-
-    }
-
-    private String getOutputValue(JsonNode root, String outputName) {
-        JsonNode node = root.path(outputName).path("value");
-        if (node.isMissingNode() || node.isNull()) {
-            LOGGER.warn("Output '{}' no encontrado o nulo", outputName);
-            return null;
-        }
-        return node.asText();
-    }
-
-    private JsonNode parseJson(String json) throws ISchedulerException {
-        try {
-            var mapper = new ObjectMapper();
-            return mapper.readTree(json);
-        } catch (IOException ex) {
-            throw new ISchedulerException(ex.getMessage(), ex);
-        }
-    }
-
     private Ec2Client getEc2Client() {
-        return Ec2Client.builder()
-                .endpointOverride(URI.create("http://localhost:4566"))
-                .region(Region.US_WEST_2)
-                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")))
-                .build();
+        return awsFactory.createEc2Client();
     }
-
-    private String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam) throws ISchedulerException {
-        try {
-            System.out.println("TEST 1");
-            Ec2Client ec2 = getEc2Client();
-            System.out.println("TEST 2");
-            RunInstancesRequest runRequest = RunInstancesRequest.builder()
-                    .imageId("ami-0c55b159cbfafe1f0")
-                    .instanceType(InstanceType.T2_MICRO)
-                    .maxCount(1)
-                    .minCount(1)
-                    .subnetId(subnet)
-                    .securityGroupIds(sgId)
-                    /*.iamInstanceProfile(IamInstanceProfileSpecification.builder()
-                            .arn(iam)
-                            .build())*/
-                    /*TODO: analizar*/              .userData(Base64.getEncoder().encodeToString(userDataScript.getBytes(StandardCharsets.UTF_8)))
-                    .tagSpecifications(TagSpecification.builder()
-                            .resourceType(ResourceType.INSTANCE)
-                            .tags(Tag.builder().key("Name").value(instanceName).build(),
-                                    Tag.builder().key("JobName").value(instanceName.split("-")[0]).build())
-                            .build())
-                    .build();
-            System.out.println("TEST 3");
-            RunInstancesResponse response = ec2.runInstances(runRequest);
-            System.out.println("TEST 4");
-            String instanceId = response.instances().get(0).instanceId(); // TODO: se pueden lanzar múltiples instancias? Debería permitirlo?
-            System.out.println("TEST 5");
-
-            LOGGER.info("Instance launched: {}", instanceId);
-            return instanceId;
-        }catch (Exception e){
-            LOGGER.error("Failed to create EC2 instance", e);
-            if (e instanceof software.amazon.awssdk.services.ec2.model.Ec2Exception) {
-                Ec2Exception ex = (Ec2Exception) e;
-                System.err.println("AWS Error Code    : " + ex.awsErrorDetails().errorCode());
-                System.err.println("AWS Error Message : " + ex.awsErrorDetails().errorMessage());
-                System.err.println("Request ID        : " + ex.requestId());
-            }
-            System.err.println("Full stack trace:");
-            e.printStackTrace();
-            throw new ISchedulerException("Failed to create EC2 instance", e);
-        }
-    }
-
-    /*private S3Client getS3Client() {
-        return S3Client.builder()
-                .endpointOverride(URI.create("http://localhost:4566"))
-                .region(Region.US_WEST_2)
-                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")))
-                .build();
-
-    }*/
 
     private S3Client getS3Client() {
-        return S3Client.builder()
-                .endpointOverride(URI.create("http://localhost:4566"))
-                .region(Region.US_WEST_2)
-                .credentialsProvider(
-                        StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test"))
-                )
-                .serviceConfiguration(
-                        S3Configuration.builder()
-                                .pathStyleAccessEnabled(true)     // <-- CLAVE para LocalStack
-                                .chunkedEncodingEnabled(false)    // <-- evita problemas de chunked
-                                .build()
-                )
-                .build();
+        return awsFactory.createS3Client();
     }
 
     private String uploadToS3(String bucket, String jobId, String fileName, byte[] data) throws ISchedulerException {
@@ -447,55 +200,6 @@ public class Cloud implements IScheduler {
         return s.replace("'", "'\"'\"'");
     }
 
-    /*private String buildUserData(String jobName, String bucket, String bundleKey, IClusterRequest req) {
-        List<String> args = (req != null && req.resources() != null) ? req.resources().args() : List.of();
-        String cmd = (args == null || args.isEmpty()) ? "echo 'No args provided' && sleep 3600" : String.join(" ", args);
-
-        // Aplica RO aproximado
-        String roChmods = "";
-        if (req != null && req.resources() != null && req.resources().binds() != null) {
-            roChmods = req.resources().binds().stream()
-                    .filter(b -> b != null && b.ro() && b.container() != null && !b.container().isBlank())
-                    .map(b -> "chmod -R a-w " + b.container() + " || true")
-                    .collect(Collectors.joining("\n"));
-        }
-
-        // Ojo: el AMI debe traer curl + tar. Si no, instala (Amazon Linux: yum; Ubuntu: apt).
-        // Para LocalStack/entorno controlado, puedes simplificar.
-        return """
-            #!/bin/bash
-            set -euo pipefail
-
-            # (Opcional) instala dependencias según tu AMI:
-            if command -v yum >/dev/null 2>&1; then
-              yum -y update || true
-              yum -y install awscli tar gzip curl || true
-            elif command -v apt-get >/dev/null 2>&1; then
-              apt-get update -y || true
-              apt-get install -y awscli tar gzip curl || true
-            fi
-
-            export IGNIS_SCHEDULER_ENV_JOB='%s'
-
-            # instance-id por metadata (en AWS real funciona; en LocalStack puede depender)
-            IID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
-            export IGNIS_SCHEDULER_ENV_CONTAINER="$IID"
-
-            aws --region us-west-2 s3 cp 's3://%s/%s' /tmp/bundle.tar.gz
-            tar -xzf /tmp/bundle.tar.gz -C /
-
-            %s
-
-            exec /bin/bash -lc '%s'
-            """.formatted(
-                shellEscapeSingleQuotes(jobName),
-                shellEscapeSingleQuotes(bucket),
-                shellEscapeSingleQuotes(bundleKey),
-                roChmods,
-                shellEscapeSingleQuotes(cmd)
-        );
-    }*/
-
     private String buildUserData(String jobName, String bucket, String bundleKey, String jobId, String image, String cmd) throws ISchedulerException {
         String template = loadResourceAsString("scripts/userdata.sh");
 
@@ -568,14 +272,10 @@ public class Cloud implements IScheduler {
 
         LOGGER.info("Creating job with name {} and id {}", finalJobName, jobId);
 
-        if(terraformOutputs.isEmpty()) {
-            throw new ISchedulerException("Terraform output was not captured: " + finalJobName);
-        }
-
-        String subnet = terraformOutputs.get("subnet_id");
-        String sg = terraformOutputs.get("sg_id");
-        String iamRoleArn = terraformOutputs.get("iam_role_arn");
-        String bucket = terraformOutputs.get("jobs_bucket_name");
+        String subnet = terraformManager.requireOutput("subnet_id");
+        String sg = terraformManager.requireOutput("sg_id");
+        String iamRoleArn = terraformManager.requireOutput("iam_role_arn");
+        String bucket = terraformManager.requireOutput("jobs_bucket_name");
 
         if(subnet == null || sg == null || iamRoleArn == null || bucket == null) {
             throw new ISchedulerException("Terraform outputs not found");
@@ -598,7 +298,7 @@ public class Cloud implements IScheduler {
 
 
             //String userData = buildUserData(finalJobName, bucket, bundleKey, jobId, driver.resources().image(), driver.resources().args());
-            String instanceId = createEC2Instance(finalJobName + "-driver", userData, "ami-df570af1", subnet, sg, iamRoleArn);
+            String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, "ami-df570af1", subnet, sg, iamRoleArn);
 
             return finalJobName;
 
@@ -655,10 +355,4 @@ public class Cloud implements IScheduler {
             throw new ISchedulerException("LocalStack no responde: " + ex.getMessage(), ex);
         }
     }
-
-
 }
-
-
-
-
