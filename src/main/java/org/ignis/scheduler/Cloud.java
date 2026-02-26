@@ -46,8 +46,8 @@ public class Cloud implements IScheduler {
     private final TerraformManager terraformManager;
     private final AwsFactory awsFactory;
     private final EC2Operations ec2;
-    /*private final S3Operations s3;
-    private final UserDataBuilder userDataBuilder;
+    private final S3Operations s3;
+    /*private final UserDataBuilder userDataBuilder;
     private final BundleCreator bundleCreator;*/
 
 
@@ -62,6 +62,7 @@ public class Cloud implements IScheduler {
         this.terraformManager = new TerraformManager();
         this.awsFactory = new AwsFactory();
         this.ec2 = new EC2Operations(awsFactory);
+        this.s3 = new S3Operations(awsFactory);
 
         this.terraformManager.provision();
 
@@ -89,33 +90,6 @@ public class Cloud implements IScheduler {
 
     private S3Client getS3Client() {
         return awsFactory.createS3Client();
-    }
-
-    private String uploadToS3(String bucket, String jobId, String fileName, byte[] data) throws ISchedulerException {
-        if (data == null || data.length == 0) {
-            throw new ISchedulerException("Data is empty to upload to S3");
-        }
-        if(fileName == null || fileName.trim().isEmpty()) {
-            throw new ISchedulerException("File name is empty to upload to S3");
-        }
-
-        String key = "jobs/" + jobId + "/" + fileName;
-        S3Client s3Client = getS3Client();
-        try{
-
-            PutObjectRequest put = PutObjectRequest.builder()
-                    .bucket(bucket)
-                    .key(key)
-                    .build();
-
-            s3Client.putObject(put, RequestBody.fromBytes(data));
-            LOGGER.info("File uploaded to S3: {}", key);
-            return key;
-
-        }catch (Exception e){
-            LOGGER.error("Failed to upload To S3", e);
-            throw new ISchedulerException("Failed to upload To S3", e);
-        }
     }
 
     private String stripLeadingSlash(String p) {
@@ -285,7 +259,7 @@ public class Cloud implements IScheduler {
 
             List<IBindMount> binds = buildPayloadBindsFromArgs(driver);
             byte[] bundle = buildBindsBundleTarGz(binds);
-            String bundleKey = uploadToS3(bucket, jobId, "bundle.tar.gz", bundle);
+            String bundleKey = s3.uploadJobBundle(bucket, jobId, bundle);
 
             Path script = detectMainScript(driver.resources().args());
             String cloudScriptPath = "/ignis/dfs/payload/" + script.getFileName();
