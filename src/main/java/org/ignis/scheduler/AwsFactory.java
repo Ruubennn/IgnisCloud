@@ -62,6 +62,7 @@ public class AwsFactory {
         return DEFAULT_REGION;
     }
 
+    // Reference: [20], [21]
     public Ec2Client createEc2Client() {
         var builder = Ec2Client.builder().region(getRegion());
         if (isLocalStackMode()) {
@@ -73,6 +74,7 @@ public class AwsFactory {
         return builder.build();
     }
 
+    // Reference: [28]
     public S3Client createS3Client() {
         var builder = S3Client.builder().region(getRegion());
         if (isLocalStackMode()) {

@@ -12,6 +12,7 @@ public class PayloadResolver {
 
     private static final String CLOUD_PAYLOAD_DIR = "/ignis/dfs/payload";
 
+    // Reference: [38], [39]
     public Path detectMainScript(List<String> args){
         if(args == null || args.isEmpty()) return null;
         for(String a: args){

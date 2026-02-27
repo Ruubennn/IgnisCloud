@@ -18,6 +18,7 @@ public class EC2Operations {
         this.awsFactory = awsFactory;
     }
 
+    // Reference [19], [22], [23]
     public String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam) throws ISchedulerException {
         Ec2Client ec2 = awsFactory.createEc2Client();
         try {
@@ -46,14 +47,6 @@ public class EC2Operations {
             return instanceId;
         }catch (Exception e){
             LOGGER.error("Failed to create EC2 instance", e);
-            if (e instanceof software.amazon.awssdk.services.ec2.model.Ec2Exception) {
-                Ec2Exception ex = (Ec2Exception) e;
-                System.err.println("AWS Error Code    : " + ex.awsErrorDetails().errorCode());
-                System.err.println("AWS Error Message : " + ex.awsErrorDetails().errorMessage());
-                System.err.println("Request ID        : " + ex.requestId());
-            }
-            System.err.println("Full stack trace:");
-            e.printStackTrace();
             throw new ISchedulerException("Failed to create EC2 instance", e);
         }
     }

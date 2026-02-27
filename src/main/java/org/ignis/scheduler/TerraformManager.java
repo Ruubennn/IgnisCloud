@@ -79,6 +79,7 @@ public class TerraformManager {
         return value;
     }
 
+    // Reference: [12], [13], [14], [15]
     private void copyTerraformResourcesTo(Path destination) throws ISchedulerException, IOException {
         ClassLoader cl = getClass().getClassLoader();
         URL url = cl.getResource(TF_RESOURCE_DIR);
@@ -126,6 +127,7 @@ public class TerraformManager {
         }
     }
 
+    // Reference: [10], [11]
     private void executeTerraform(Path workDir, String... args) throws ISchedulerException {
         List<String> command = new ArrayList<>();
         command.add(terraformBinary);
@@ -159,6 +161,7 @@ public class TerraformManager {
         }
     }
 
+    // Reference: [10], [11]
     private void captureOutputs(Path workDir) throws ISchedulerException {
         LOGGER.info("Capturing Terraform outputs in directory {}", workDir);
 
@@ -210,6 +213,7 @@ public class TerraformManager {
         return node.asText();
     }
 
+    // Reference: [1], [18]
     private JsonNode parseJson(String json) throws ISchedulerException {
         try {
             var mapper = new ObjectMapper();
@@ -219,6 +223,7 @@ public class TerraformManager {
         }
     }
 
+    // Reference: [16]
     private static void deleteDirectoryRecursively(Path dir) throws IOException {
         if (!Files.exists(dir)) return;
 

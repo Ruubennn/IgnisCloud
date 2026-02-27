@@ -18,6 +18,7 @@ public class BundleCreator {
     private static final String STAGING_DIR_NAME = "staging";
     private static final String TAR_FILENAME = "bundle.tar.gz";
 
+    // Reference: [32]
     public byte[] createBundleTarGz(List<IBindMount> binds) throws ISchedulerException {
         if(binds == null || binds.isEmpty()) {
             throw new ISchedulerException("Binds empty");
@@ -48,6 +49,8 @@ public class BundleCreator {
         }
     }
 
+    // Reference: [10], [11], [31]
+    // Why tar.gz?  [36], [37]
     private Path createTarGz(Path tmpDir, Path staging) throws IOException, InterruptedException {
         Path tarGz =  tmpDir.resolve(TAR_FILENAME);
         ProcessBuilder pb = new ProcessBuilder("tar", "-czf",  tarGz.toString(), "-C", staging.toString(), ".");
@@ -82,11 +85,13 @@ public class BundleCreator {
         }
     }
 
+    // Reference: [30]
     private String stripLeadingSlash(String p) {
         if (p == null) return "";
         return p.startsWith("/") ? p.substring(1) : p;
     }
 
+    // Reference: [33], [34], [35]
     private void copyRecursively(Path src, Path dst) throws IOException {
         if(Files.isDirectory(src)){
             Files.createDirectories(dst);
@@ -109,6 +114,7 @@ public class BundleCreator {
         }
     }
 
+    // Reference: [16]
     private static void deleteDirectoryRecursively(Path dir) throws IOException {
         if (!Files.exists(dir)) return;
 
