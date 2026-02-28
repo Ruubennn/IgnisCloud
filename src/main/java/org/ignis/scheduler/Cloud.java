@@ -119,8 +119,15 @@ public class Cloud implements IScheduler {
 
     @Override
     public IContainerInfo.IStatus getContainerStatus(String job, String id) throws ISchedulerException {
-        System.out.println("AAA: getContainerStatus");
-       return null;
+       /* System.out.println("AAA: getContainerStatus");
+       return null;*/
+
+        // TODO: Revisar
+        Instance inst = ec2.getInstanceInfo(id);
+        if (inst == null) {
+            return IContainerInfo.IStatus.DESTROYED;
+        }
+        return ec2.mapToSchedulerStatus(inst.state().nameAsString());
     }
 
     @Override
