@@ -22,13 +22,17 @@ public class TerraformManager {
 
     private final String terraformBinary;
     private final Map<String, String> outputs = new HashMap<>();
+    private Path workDir = null;
 
     public TerraformManager() {
         this.terraformBinary = System.getProperty(TF_BIN_PROP, "terraform");
     }
 
     public void provision() throws ISchedulerException {
-        Path workDir = null;
+        if(this.workDir != null) {
+            LOGGER.warn("WorkDir already exists");
+            throw new IllegalStateException("TerraformManager already provisioned");
+        }
 
         try {
             workDir = Files.createTempDirectory("ignis-terraform-");
@@ -42,21 +46,18 @@ public class TerraformManager {
             captureOutputs(workDir);
 
             LOGGER.info("Terraform infrastructure applied successfully.");
-        } catch (ISchedulerException e){
-            LOGGER.error("Failed to provision infrastructure: {}", e.getMessage());
-            throw e;
-        } catch (IOException e){
-            LOGGER.error("Failed to prepare or cleanup Terraform directory", e);
-            throw new ISchedulerException("Failed to prepare or cleanup Terraform directory", e);
-        } finally {
-            if (CLEANUP_WORKDIR && workDir != null && Files.exists(workDir)) {
-                try{
-                    LOGGER.info("Cleaning up temporary directory: {}", workDir.toString());
+
+        } catch (Exception e) {
+            if (workDir != null && Files.exists(workDir)) {
+                try {
                     deleteDirectoryRecursively(workDir);
-                } catch (IOException e){
-                    LOGGER.warn("Cleanup failed for {}", workDir, e);
+                    LOGGER.info("Limpieza de directorio parcial tras fallo");
+                } catch (Exception ex) {
+                    LOGGER.warn("No se pudo limpiar directorio tras error", ex);
                 }
             }
+            workDir = null;
+            throw new ISchedulerException("Fallo durante terraform provision", e);
         }
     }
 
@@ -237,5 +238,35 @@ public class TerraformManager {
                         }
                     });
         }
+    }
+
+    public void destroy() throws ISchedulerException {
+        if(this.workDir == null || !Files.exists(this.workDir)) {
+            LOGGER.info("Terraform temporary directory has been deleted");
+            return;
+        }
+
+        try{
+            executeTerraform(this.workDir, "destroy", "-auto-approve", "-input=false");
+            LOGGER.info("Destroy completed");
+        } catch (Exception e){
+            LOGGER.error("Failed to destroy Terraform", e);
+            throw new ISchedulerException("Failed to destroy Terraform", e);
+        } finally {
+            cleanupWorkDir();
+            this.workDir = null;
+        }
+    }
+
+    private void cleanupWorkDir() {
+        if (this.workDir == null || !Files.exists(this.workDir)) return;
+
+        try {
+            deleteDirectoryRecursively(this.workDir);
+            LOGGER.info("Cleanup completed");
+        } catch (Exception e){
+            LOGGER.error("Failed to cleanup Terraform", e);
+        }
+
     }
 }

@@ -17,7 +17,7 @@ public class Cloud implements IScheduler {
     private final BundleCreator bundleCreator;
     private final PayloadResolver payloadResolver;
 
-    public Cloud(String url) throws ISchedulerException{
+    public Cloud(String url) throws ISchedulerException, Exception {
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
         this.terraformManager = new TerraformManager();
@@ -62,7 +62,7 @@ public class Cloud implements IScheduler {
             /*String userData = buildUserData(finalJobName, bucket, bundleKey, jobId,
                     driver.resources().image(), cmd);*/
             // TODO: despliegue en aws
-            String userData = userDataBuilder.buildUserData(finalJobName, bucket, bundleKey, jobId, "python:3.11-slim", cmd);
+            String userData = userDataBuilder.buildUserData(finalJobName, jobId, bucket, bundleKey ,"python:3.11-slim", cmd);
 
 
             //String userData = buildUserData(finalJobName, bucket, bundleKey, jobId, driver.resources().image(), driver.resources().args());
@@ -78,49 +78,53 @@ public class Cloud implements IScheduler {
 
     @Override
     public void cancelJob(String id) throws ISchedulerException {
+        System.out.println("Canceling job with id " + id);
+        System.out.println("AAAAAAAAAAAAAAAAAaaaaaaaaAAAAAAAAa");
     }
 
     @Override
     public IJobInfo getJob(String id) throws ISchedulerException {
+        System.out.println("AAA: getJob");
         return null;
     }
 
     @Override
     public List<IJobInfo> listJobs(Map<String, String> filters) throws ISchedulerException {
+        System.out.println("AAA: listJobs");
         return null;
     }
 
     @Override
     public IClusterInfo createCluster(String job, IClusterRequest request) throws ISchedulerException {
+        System.out.println("AAA: createCluster");
         return null;
     }
 
     @Override
     public void destroyCluster(String job, String id) throws ISchedulerException {
+        System.out.println("AAA: destroyCluster");
     }
 
     @Override
     public IClusterInfo getCluster(String job, String id) throws ISchedulerException {
+        System.out.println("AAA: getCluster");
         return null;
     }
 
     @Override
     public IClusterInfo repairCluster(String job, IClusterInfo cluster, IClusterRequest request) throws ISchedulerException {
+        System.out.println("AAA: repairCluster");
         return null;
     }
 
     @Override
     public IContainerInfo.IStatus getContainerStatus(String job, String id) throws ISchedulerException {
+        System.out.println("AAA: getContainerStatus");
        return null;
     }
 
     @Override
     public void healthCheck() throws ISchedulerException {
-        try {
-            // Si esto responde sin error, la conexión con LocalStack está viva
-            //ec2Client.describeAvailabilityZones();
-        } catch (Exception ex) {
-            throw new ISchedulerException("LocalStack no responde: " + ex.getMessage(), ex);
-        }
+        System.out.println("AAA: healthCheck");
     }
 }
