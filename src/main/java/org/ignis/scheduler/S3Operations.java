@@ -135,7 +135,7 @@ public class S3Operations {
     }
 
     // Reference: [41]
-    public int downloadObjects(String bucket, String prefix, String localDir) throws ISchedulerException {
+    private int downloadObjects(String bucket, String prefix, String localDir) throws ISchedulerException {
        validateDownloadParams(bucket, prefix, localDir);
        Path basePath = Paths.get(localDir);
        try{
@@ -176,6 +176,37 @@ public class S3Operations {
        return succesCount;
     }
 
+    public void downloadJob(String jobId, String bucket) throws ISchedulerException {
+        if (jobId == null || jobId.trim().isEmpty()) {
+            throw new IllegalArgumentException("jobId should not be empty");
+        }
+
+        String prefix = "jobs/" + jobId.trim() + "/";
+        String configuredDir = System.getenv("IGNIS_DOWNLOAD_DIR");
+
+        String baseDir;
+        if (configuredDir != null && !configuredDir.trim().isEmpty()) {
+            baseDir = configuredDir.trim();
+            LOGGER.debug("Using directory configured as environment variable: {}", baseDir);
+        } else {
+            baseDir = Paths.get("").toAbsolutePath().toString();
+            LOGGER.debug("IGNIS_DOWNLOAD_DIR not found. Using directory: {}", baseDir);
+        }
+
+        String localDir = Paths.get(baseDir, "ignis-downloads", jobId).toString();
+
+        try {
+            Files.createDirectories(Paths.get(localDir));
+            LOGGER.info("Downloading job {} → target: {}", jobId, localDir);
+            int count = downloadObjects(bucket, prefix, localDir);
+            LOGGER.info("Download completed: {} objects in {}", count, localDir);
+
+        } catch (IOException e) {
+            throw new ISchedulerException("The download directory could not be created: " + localDir, e);
+        } catch (Exception e) {
+            throw new ISchedulerException("Failure downloading objects at job " + jobId, e);
+        }
+    }
 
     public void deleteJobObjects(String bucket, String jobId) throws ISchedulerException {
         if (jobId == null || jobId.trim().isEmpty()) {

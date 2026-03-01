@@ -75,10 +75,11 @@ public class Cloud implements IScheduler {
                     driver.resources().image(), cmd);*/
             // TODO: despliegue en aws
             String userData = userDataBuilder.buildUserData(finalJobName, jobId, bucket, bundleKey ,"python:3.11-slim", cmd);
-
-
+            
             //String userData = buildUserData(finalJobName, bucket, bundleKey, jobId, driver.resources().image(), driver.resources().args());
             String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, "ami-df570af1", subnet, sg, iamRoleArn);
+
+            s3.downloadJob(jobId, bucket);
 
             return finalJobName;
 
