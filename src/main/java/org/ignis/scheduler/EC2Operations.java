@@ -16,15 +16,6 @@ public class EC2Operations {
     private final String defaultAmi = "ami-0c55b159cbfafe1f0";
     private final InstanceType defaultInstanceType = InstanceType.T2_MICRO;
 
-    private static final Map<String, IContainerInfo.IStatus> EC2_STATUS_MAP = Map.ofEntries(
-            Map.entry("pending",       IContainerInfo.IStatus.ACCEPTED),
-            Map.entry("running",       IContainerInfo.IStatus.RUNNING),
-            Map.entry("stopping",      IContainerInfo.IStatus.RUNNING),
-            Map.entry("stopped",       IContainerInfo.IStatus.FINISHED),
-            Map.entry("shutting-down", IContainerInfo.IStatus.DESTROYED),
-            Map.entry("terminated",    IContainerInfo.IStatus.DESTROYED)
-    );
-
     public EC2Operations(AwsFactory awsFactory) {
         this.awsFactory = awsFactory;
     }
@@ -63,10 +54,11 @@ public class EC2Operations {
     }
 
     // Reference: [19]
-    public void stopInstance(Ec2Client ec2, String instanceId) throws ISchedulerException {
+    public void stopInstance(String instanceId) throws ISchedulerException {
         if (instanceId == null || instanceId.trim().isEmpty()){
             throw new ISchedulerException("Instance id can't be null or empty");
         }
+        Ec2Client ec2 = awsFactory.createEc2Client();
         try {
             StopInstancesRequest request = StopInstancesRequest.builder()
                     .instanceIds(instanceId)
@@ -82,10 +74,11 @@ public class EC2Operations {
     }
 
     // Reference: [40]
-    public void terminateInstance(Ec2Client ec2, String instanceId) throws ISchedulerException {
+    public void terminateInstance(String instanceId) throws ISchedulerException {
         if (instanceId == null || instanceId.trim().isEmpty()){
             throw new ISchedulerException("Instance id can't be null or empty");
         }
+        Ec2Client ec2 = awsFactory.createEc2Client();
         try {
             TerminateInstancesRequest request = TerminateInstancesRequest.builder()
                     .instanceIds(instanceId)
@@ -100,10 +93,11 @@ public class EC2Operations {
     }
 
     // Reference: [40]
-    private void rebootInstance(Ec2Client ec2, String instanceId) throws ISchedulerException {
+    public void rebootInstance(String instanceId) throws ISchedulerException {
         if (instanceId == null || instanceId.trim().isEmpty()){
             throw new ISchedulerException("Instance id can't be null or empty");
         }
+        Ec2Client ec2 = awsFactory.createEc2Client();
         try {
             RebootInstancesRequest request = RebootInstancesRequest.builder()
                     .instanceIds(instanceId)
@@ -153,12 +147,6 @@ public class EC2Operations {
             return "not_found";
         }
         return inst.state().nameAsString().toLowerCase();
-    }
-
-    public IContainerInfo.IStatus mapToSchedulerStatus(String awsState) {
-        if (awsState == null) return IContainerInfo.IStatus.UNKNOWN;
-        String key = awsState.trim().toLowerCase();
-        return EC2_STATUS_MAP.getOrDefault(key, IContainerInfo.IStatus.UNKNOWN);
     }
 
 }

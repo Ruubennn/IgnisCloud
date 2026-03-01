@@ -17,6 +17,18 @@ public class Cloud implements IScheduler {
     private final BundleCreator bundleCreator;
     private final PayloadResolver payloadResolver;
 
+    private final static Map<String, IContainerInfo.IStatus> CLOUD_STATUS = new HashMap<>() {
+        {
+            put("pending", IContainerInfo.IStatus.ACCEPTED);
+            put("running", IContainerInfo.IStatus.RUNNING);
+            put("stopping", IContainerInfo.IStatus.RUNNING);
+            put("stopped", IContainerInfo.IStatus.FINISHED);
+            put("shutting-down", IContainerInfo.IStatus.DESTROYED);
+            put("terminated", IContainerInfo.IStatus.DESTROYED);
+            put("not_found", IContainerInfo.IStatus.ERROR);
+        }
+    };
+
     public Cloud(String url) throws ISchedulerException, Exception {
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
@@ -119,15 +131,11 @@ public class Cloud implements IScheduler {
 
     @Override
     public IContainerInfo.IStatus getContainerStatus(String job, String id) throws ISchedulerException {
-       /* System.out.println("AAA: getContainerStatus");
-       return null;*/
-
-        // TODO: Revisar
-        Instance inst = ec2.getInstanceInfo(id);
-        if (inst == null) {
-            return IContainerInfo.IStatus.DESTROYED;
+        String awsState = ec2.getInstanceState(id);
+        if (awsState == null) {
+            return IContainerInfo.IStatus.UNKNOWN;
         }
-        return ec2.mapToSchedulerStatus(inst.state().nameAsString());
+        return CLOUD_STATUS.getOrDefault(awsState.toLowerCase(), IContainerInfo.IStatus.UNKNOWN);
     }
 
     @Override
