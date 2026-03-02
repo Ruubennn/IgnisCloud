@@ -23,9 +23,11 @@ public class TerraformManager {
     private final String terraformBinary;
     private final Map<String, String> outputs = new HashMap<>();
     private Path workDir = null;
+    private String region;
 
-    public TerraformManager() {
+    public TerraformManager(String region) {
         this.terraformBinary = System.getProperty(TF_BIN_PROP, "terraform");
+        this.region = region;
     }
 
     public void provision() throws ISchedulerException {
@@ -41,7 +43,7 @@ public class TerraformManager {
             copyTerraformResourcesTo(workDir);
 
             executeTerraform(workDir, "init", "-input=false");
-            executeTerraform(workDir, "apply", "-auto-approve", "-input=false");
+            executeTerraform(workDir, "apply", "-auto-approve", "-input=false", "-var", "aws_region=" + region);
 
             captureOutputs(workDir);
 

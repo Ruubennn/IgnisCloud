@@ -1,5 +1,5 @@
 provider "aws" {
-  region                      = "us-west-2"
+  region                      = var.aws_region
   access_key                  = "test"
   secret_key                  = "test"
   skip_credentials_validation = true
@@ -10,7 +10,7 @@ provider "aws" {
     ec2             = "http://localhost:4566"
     networkmanager  = "http://localhost:4566"
     iam             = "http://localhost:4566"
-    s3  = "http://s3.localhost.localstack.cloud:4566"
+    s3              = "http://s3.localhost.localstack.cloud:4566"
     sts             = "http://localhost:4566"
   }
 }

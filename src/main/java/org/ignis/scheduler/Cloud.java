@@ -4,6 +4,8 @@ import org.ignis.scheduler.model.*;
 import java.io.*;
 import java.util.*;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
 import software.amazon.awssdk.services.ec2.model.*;
 
 public class Cloud implements IScheduler {
@@ -32,8 +34,8 @@ public class Cloud implements IScheduler {
     public Cloud(String url) throws ISchedulerException, Exception {
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
-        this.terraformManager = new TerraformManager();
-        this.awsFactory = new AwsFactory();
+        this.awsFactory = new AwsFactory(isLocalStackEnvironment(), resolveRegion());
+        this.terraformManager = new TerraformManager(awsFactory.getRegion().id());
         this.ec2 = new EC2Operations(awsFactory);
         this.s3 = new S3Operations(awsFactory);
         this.userDataBuilder = new UserDataBuilder();
@@ -42,6 +44,35 @@ public class Cloud implements IScheduler {
 
         this.terraformManager.provision();
     }
+
+    private boolean isLocalStackEnvironment() {
+        return Boolean.parseBoolean(System.getenv("IGNIS_LOCALSTACK_ENVIRONMENT"));
+    }
+
+    private Region resolveRegion() throws  ISchedulerException {
+        if(isLocalStackEnvironment()) {
+            return Region.US_WEST_2;
+        }
+        else{
+            String configuredRegion = System.getenv("IGNIS_AWS_REGION");
+
+            if(configuredRegion != null && !configuredRegion.isBlank()) {
+                try {
+                    return Region.of(configuredRegion.trim());
+                } catch (Exception e) {
+                    throw new ISchedulerException("Invalid AWS region '" + configuredRegion + "'. Example: eu-west-1", e);
+                }
+            }
+            try{
+                Region auto = new DefaultAwsRegionProviderChain().getRegion();
+                if(auto != null) return auto;
+            } catch (Exception ignored){}
+
+            throw new ISchedulerException("AWS region not configured. Set IGNIS_AWS_REGION or configure it in ~/.aws/config (aws configure) or export AWS_REGION/AWS_DEFAULT_REGION.");
+        }
+
+    }
+
     @Override
     public String createJob(String name, IClusterRequest driver, IClusterRequest... executors) throws ISchedulerException {
 
@@ -74,8 +105,8 @@ public class Cloud implements IScheduler {
             /*String userData = buildUserData(finalJobName, bucket, bundleKey, jobId,
                     driver.resources().image(), cmd);*/
             // TODO: despliegue en aws
-            String userData = userDataBuilder.buildUserData(finalJobName, jobId, bucket, bundleKey ,"python:3.11-slim", cmd);
-            
+            String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(),finalJobName, jobId, bucket, bundleKey ,"python:3.11-slim", cmd);
+
             //String userData = buildUserData(finalJobName, bucket, bundleKey, jobId, driver.resources().image(), driver.resources().args());
             String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, "ami-df570af1", subnet, sg, iamRoleArn);
 

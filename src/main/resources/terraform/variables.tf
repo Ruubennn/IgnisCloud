@@ -15,3 +15,8 @@ variable "ami_id" {
   type = string
   default = "ami-df570af1"
 }
+
+variable "aws_region" {
+  description = "AWS region where resources will be created"
+  type = string
+}

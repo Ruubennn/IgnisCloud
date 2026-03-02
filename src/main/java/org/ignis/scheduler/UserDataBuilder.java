@@ -13,7 +13,7 @@ public class UserDataBuilder {
     private static final String TEMPLATE_RESOURCE_PATH = "scripts/userdata.sh";
     private static final String DEFAULT_IMAGE = "python:3.11-slim";
 
-    public String buildUserData(String jobName, String jobId, String bucket, String bundleKey, String image, String command) throws ISchedulerException{
+    public String buildUserData(String region, String jobName, String jobId, String bucket, String bundleKey, String image, String command) throws ISchedulerException{
         String template = loadTemplate();
 
         Map<String, String> vars = new HashMap<>();
@@ -23,7 +23,7 @@ public class UserDataBuilder {
         vars.put("BUNDLE_KEY", shellEscapeSingleQuotes(bundleKey));
         vars.put("IMAGE", shellEscapeSingleQuotes(image));
         vars.put("CMD", shellEscapeSingleQuotes(command));
-        vars.put("REGION", "us-west-2");
+        vars.put("REGION", region);
 
         return renderTemplate(template, vars);
     }
