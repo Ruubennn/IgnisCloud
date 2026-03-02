@@ -136,28 +136,19 @@ public class Cloud implements IScheduler {
         }
 
         try {
-
-            String scriptPath = payloadResolver.resolveCloudScriptPath(driver);
-            if (scriptPath == null) {
-                throw new ISchedulerException("Script path not found");
-            }
             List<IBindMount> binds = payloadResolver.buildPayloadBindsFromArgs(driver);
             byte[] bundle = bundleCreator.createBundleTarGz(binds);
             String bundleKey = s3.uploadJobBundle(bucket, jobId, bundle);
+            String cmd = payloadResolver.resolveCommand(driver);
+            String image = payloadResolver.resolveImage(driver);
 
-            String cmd = "python3 " + scriptPath;
-
-            /*String userData = buildUserData(finalJobName, bucket, bundleKey, jobId,
-                    driver.resources().image(), cmd);*/
             // TODO: despliegue en aws
-            String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(),finalJobName, jobId, bucket, bundleKey ,"python:3.11-slim", cmd);
+            String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(),finalJobName, jobId,
+                    bucket, bundleKey , image, cmd);
 
-            //String userData = buildUserData(finalJobName, bucket, bundleKey, jobId, driver.resources().image(), driver.resources().args());
             InstanceType instanceType = resolveInstanceType(driver);
             String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, resolveAMI(), subnet, sg, iamRoleArn, instanceType);
-
-            s3.downloadJob(jobId, bucket);
-
+            //s3.downloadJob(jobId, bucket);
             return finalJobName;
 
         } catch (Exception e) {

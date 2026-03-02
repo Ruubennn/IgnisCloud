@@ -11,7 +11,6 @@ public class UserDataBuilder {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
 
     private static final String TEMPLATE_RESOURCE_PATH = "scripts/userdata.sh";
-    private static final String DEFAULT_IMAGE = "python:3.11-slim";
 
     public String buildUserData(String region, String jobName, String jobId, String bucket, String bundleKey, String image, String command) throws ISchedulerException{
         String template = loadTemplate();

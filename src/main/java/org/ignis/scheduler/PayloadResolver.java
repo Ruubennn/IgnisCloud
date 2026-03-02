@@ -6,6 +6,7 @@ import org.ignis.scheduler.model.IClusterRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 
 public class PayloadResolver {
@@ -40,5 +41,45 @@ public class PayloadResolver {
             return null;
         }
         return CLOUD_PAYLOAD_DIR + "/" + script.getFileName();
+    }
+
+    public String resolveCommand(IClusterRequest driver) {
+        List<String> args = driver.resources().args();
+        if(args == null || args.isEmpty()) return "";
+
+        Path mainLocalScript = detectMainScript(args);
+        String cloudScriptPath = (mainLocalScript!=null) ? resolveCloudScriptPath(driver) : null;
+
+        int startIndex = 0;
+        if(!args.isEmpty() && "ignis-job".equals(args.get(0))){
+            startIndex = 2;
+        }
+
+        List<String> command = new ArrayList<>();
+        for(int i = startIndex; i < args.size(); i++){
+            String arg =  args.get(i);
+
+            if (mainLocalScript != null && arg.equals(mainLocalScript.toString())) {
+                command.add(cloudScriptPath);
+            } else {
+                command.add(arg);
+            }
+        }
+
+        if (command.isEmpty() && cloudScriptPath != null) {
+            return cloudScriptPath;
+        }
+        return String.join(" ", command);
+    }
+
+    public String resolveImage(IClusterRequest driver) {
+        String image = driver.resources().image();
+        if(image == null || image.contains("ignishpc/ignishpc")){
+            List<String> args = driver.resources().args();
+            if(args.size() > 1 && args.get(1).contains("/")){
+                image = args.get(1);
+            }
+        }
+        return image;
     }
 }
