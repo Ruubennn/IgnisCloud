@@ -14,19 +14,18 @@ public class EC2Operations {
 
     private final AwsFactory awsFactory;
     private final String defaultAmi = "ami-0c55b159cbfafe1f0";
-    private final InstanceType defaultInstanceType = InstanceType.T2_MICRO;
 
     public EC2Operations(AwsFactory awsFactory) {
         this.awsFactory = awsFactory;
     }
 
     // Reference [19], [22], [23]
-    public String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam) throws ISchedulerException {
+    public String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam, InstanceType instanceType) throws ISchedulerException {
         Ec2Client ec2 = awsFactory.createEc2Client();
         try {
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
                     .imageId(defaultAmi)
-                    .instanceType(defaultInstanceType)
+                    .instanceType(instanceType)
                     .maxCount(1)
                     .minCount(1)
                     .subnetId(subnet)

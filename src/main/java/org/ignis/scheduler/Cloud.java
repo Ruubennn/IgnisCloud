@@ -73,6 +73,28 @@ public class Cloud implements IScheduler {
 
     }
 
+    private InstanceType resolveInstanceType(IClusterRequest driver) throws ISchedulerException {
+        String type =  System.getenv("IGNIS_INSTANCE_TYPE");
+        if(type != null && !type.isBlank()) {
+            try {
+                return InstanceType.fromValue(type.trim());
+            }  catch (Exception e) {
+                throw new ISchedulerException("Invalid instance type '" + type, e);
+            }
+        }
+
+        int cpus = driver.resources().cpus();
+        long ram = driver.resources().memory() / (1024L * 1024L);
+
+        if (cpus <= 1 && ram <= 1024) return InstanceType.T3_MICRO;
+        if (cpus <= 2 && ram <= 2048) return InstanceType.T3_SMALL;
+        if (cpus <= 2 && ram <= 4096) return InstanceType.T3_MEDIUM;
+        if (cpus <= 4 && ram <= 8192) return InstanceType.T3_LARGE;
+        // TODO: analizar otras familias y requisitos MEJOR
+
+        return InstanceType.T3_LARGE;
+    }
+
     @Override
     public String createJob(String name, IClusterRequest driver, IClusterRequest... executors) throws ISchedulerException {
 
@@ -108,7 +130,8 @@ public class Cloud implements IScheduler {
             String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(),finalJobName, jobId, bucket, bundleKey ,"python:3.11-slim", cmd);
 
             //String userData = buildUserData(finalJobName, bucket, bundleKey, jobId, driver.resources().image(), driver.resources().args());
-            String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, "ami-df570af1", subnet, sg, iamRoleArn);
+            InstanceType instanceType = resolveInstanceType(driver);
+            String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, "ami-df570af1", subnet, sg, iamRoleArn, instanceType);
 
             s3.downloadJob(jobId, bucket);
 
