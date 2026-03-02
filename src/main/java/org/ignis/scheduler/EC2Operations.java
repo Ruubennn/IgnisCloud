@@ -1,19 +1,16 @@
 package org.ignis.scheduler;
 
-import org.ignis.scheduler.model.IContainerInfo;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
-import java.util.Map;
 
 public class EC2Operations {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
 
     private final AwsFactory awsFactory;
-    private final String defaultAmi = "ami-0c55b159cbfafe1f0";
 
     public EC2Operations(AwsFactory awsFactory) {
         this.awsFactory = awsFactory;
@@ -24,7 +21,7 @@ public class EC2Operations {
         Ec2Client ec2 = awsFactory.createEc2Client();
         try {
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
-                    .imageId(defaultAmi)
+                    .imageId(amiId)
                     .instanceType(instanceType)
                     .maxCount(1)
                     .minCount(1)
@@ -147,5 +144,7 @@ public class EC2Operations {
         }
         return inst.state().nameAsString().toLowerCase();
     }
+
+
 
 }

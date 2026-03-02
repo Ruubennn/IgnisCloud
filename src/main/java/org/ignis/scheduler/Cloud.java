@@ -7,6 +7,8 @@ import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
 import software.amazon.awssdk.services.ec2.model.*;
+import software.amazon.awssdk.services.ssm.SsmClient;
+import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
 
 public class Cloud implements IScheduler {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
@@ -86,13 +88,34 @@ public class Cloud implements IScheduler {
         int cpus = driver.resources().cpus();
         long ram = driver.resources().memory() / (1024L * 1024L);
 
-        if (cpus <= 1 && ram <= 1024) return InstanceType.T3_MICRO;
+        if (cpus <= 2 && ram <= 1024) return InstanceType.T3_MICRO;
         if (cpus <= 2 && ram <= 2048) return InstanceType.T3_SMALL;
         if (cpus <= 2 && ram <= 4096) return InstanceType.T3_MEDIUM;
-        if (cpus <= 4 && ram <= 8192) return InstanceType.T3_LARGE;
+        if (cpus <= 2 && ram <= 8192) return InstanceType.T3_LARGE;
+        if (cpus <= 4 && ram <= 16384) return InstanceType.T3_XLARGE;
+        if (cpus <= 8 && ram <= 32768) return InstanceType.T3_2_XLARGE;
         // TODO: analizar otras familias y requisitos MEJOR
 
         return InstanceType.T3_LARGE;
+    }
+
+    // Reference: [46], [47]
+    private String resolveAMI() throws ISchedulerException {
+        String userAMI = System.getenv("IGNIS_AMI");
+        if(userAMI != null && !userAMI.isBlank()) return userAMI.trim();
+        if(awsFactory.isLocalStackMode()) return "ami-0c55b159cbfafe1f0";
+
+        String paramName = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64";
+
+        try (SsmClient ssm = awsFactory.createSsmClient()) {
+            return ssm.getParameter(GetParameterRequest.builder()
+                            .name(paramName)
+                            .build())
+                    .parameter()
+                    .value();
+        } catch (Exception e) {
+            throw new ISchedulerException("Failed to resolve AMI via SSM (" + paramName + ")", e);
+        }
     }
 
     @Override
@@ -131,7 +154,7 @@ public class Cloud implements IScheduler {
 
             //String userData = buildUserData(finalJobName, bucket, bundleKey, jobId, driver.resources().image(), driver.resources().args());
             InstanceType instanceType = resolveInstanceType(driver);
-            String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, "ami-df570af1", subnet, sg, iamRoleArn, instanceType);
+            String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, resolveAMI(), subnet, sg, iamRoleArn, instanceType);
 
             s3.downloadJob(jobId, bucket);
 

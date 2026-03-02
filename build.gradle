@@ -27,6 +27,7 @@ dependencies {
     implementation(platform("software.amazon.awssdk:bom:2.27.21"))
     implementation("software.amazon.awssdk:ec2")
     implementation("software.amazon.awssdk:s3")
+    implementation("software.amazon.awssdk:ssm")
 
     implementation(group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.16.0')
     implementation 'com.fasterxml.jackson.core:jackson-core:2.16.0'

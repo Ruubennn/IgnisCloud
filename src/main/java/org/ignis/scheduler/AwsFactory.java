@@ -7,6 +7,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.ssm.SsmClient;
 
 import java.net.URI;
 
@@ -76,6 +77,20 @@ public class AwsFactory {
                                     .pathStyleAccessEnabled(true)     // <-- CLAVE para LocalStack
                                     .chunkedEncodingEnabled(false)    // <-- evita problemas de chunked
                                     .build());
+        }
+        return builder.build();
+    }
+
+    public SsmClient createSsmClient(){
+        var builder =  SsmClient.builder();
+        if(getRegion() != null) {
+            builder.region(getRegion());
+        }
+        if (isLocalStackMode()) {
+            if(getRegion() == null) builder.region(Region.US_WEST_2);
+            builder
+                    .endpointOverride(localStackUri)
+                    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")));
         }
         return builder.build();
     }
