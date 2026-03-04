@@ -70,10 +70,7 @@ public class EC2Operations {
     }
 
     // Reference: [40]
-    public void terminateInstance(String instanceId) throws ISchedulerException {
-        if (instanceId == null || instanceId.trim().isEmpty()){
-            throw new ISchedulerException("Instance id can't be null or empty");
-        }
+    public void terminateInstance(String instanceId) {
         Ec2Client ec2 = awsFactory.createEc2Client();
         try {
             TerminateInstancesRequest request = TerminateInstancesRequest.builder()
@@ -82,9 +79,12 @@ public class EC2Operations {
 
             ec2.terminateInstances(request);
             LOGGER.info("Successfully terminated instance: {}", instanceId);
-        } catch (Exception e){
-            LOGGER.error("Failed to terminate instance", e);
-            throw new ISchedulerException("Failed to terminate instance", e);
+        } catch (Ec2Exception e){
+            String code = e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : null;
+            if ("InvalidInstanceID.NotFound".equals(code)) {
+                return;
+            }
+            throw e;
         }
     }
 
@@ -144,7 +144,6 @@ public class EC2Operations {
         }
         return inst.state().nameAsString().toLowerCase();
     }
-
 
 
 }

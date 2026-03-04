@@ -1,8 +1,15 @@
 package org.ignis.scheduler;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.ignis.scheduler.model.*;
 import java.io.*;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
@@ -20,6 +27,18 @@ public class Cloud implements IScheduler {
     private final UserDataBuilder userDataBuilder;
     private final BundleCreator bundleCreator;
     private final PayloadResolver payloadResolver;
+
+    private static record JobMeta(
+      String jobId,
+      String jobName,
+      String bucket,
+      String instanceId,
+      String image,
+      String cmd
+    ){}
+
+    private final Map<String, JobMeta> jobs = new ConcurrentHashMap<>();
+    private final ObjectMapper mapper = new ObjectMapper();
 
     private final static Map<String, IContainerInfo.IStatus> CLOUD_STATUS = new HashMap<>() {
         {
@@ -118,6 +137,59 @@ public class Cloud implements IScheduler {
         }
     }
 
+    private Path jobsDir() {
+        return Paths.get(System.getProperty("user.home"), ".ignis-cloud", "jobs");
+    }
+
+    private void saveJobMeta(JobMeta meta) throws IOException {
+        Files.createDirectories(jobsDir());
+        Path file = jobsDir().resolve(meta.jobId() + ".json");
+        mapper.writeValue(file.toFile(), meta);
+    }
+
+    private JobMeta loadJobMetaFromDisk(String jobId) {
+        try {
+            Path file = jobsDir().resolve(jobId + ".json");
+            if (!Files.exists(file)) {
+                return null;
+            }
+            return mapper.readValue(file.toFile(), JobMeta.class);
+        } catch (Exception e) {
+            LOGGER.warn("Could not load job meta for {}", jobId, e);
+            return null;
+        }
+    }
+
+    private Map<String, JobMeta> loadAllJobsFromDisk() {
+        Map<String, JobMeta> result = new HashMap<>();
+
+        try {
+            if (!Files.exists(jobsDir())) {
+                return result;
+            }
+
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(jobsDir(), "*.json")) {
+                for (Path p : stream) {
+                    JobMeta meta = mapper.readValue(p.toFile(), JobMeta.class);
+                    result.put(meta.jobId(), meta);
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Could not load jobs from disk", e);
+        }
+
+        return result;
+    }
+
+    private void deleteJobMeta(String jobId) {
+        try {
+            Files.deleteIfExists(jobsDir().resolve(jobId + ".json"));
+        } catch (IOException e) {
+            LOGGER.warn("Could not delete job meta for {}", jobId);
+        }
+    }
+
+
     @Override
     public String createJob(String name, IClusterRequest driver, IClusterRequest... executors) throws ISchedulerException {
 
@@ -149,6 +221,12 @@ public class Cloud implements IScheduler {
             InstanceType instanceType = resolveInstanceType(driver);
             String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, resolveAMI(), subnet, sg, iamRoleArn, instanceType);
             //s3.downloadJob(jobId, bucket);
+
+            JobMeta meta = new JobMeta(finalJobName, finalJobName, bucket, instanceId, image, cmd);
+            jobs.put(finalJobName, meta);
+            saveJobMeta(meta);
+
+            System.out.println("Salió del createJOB");
             return finalJobName;
 
         } catch (Exception e) {
@@ -159,20 +237,43 @@ public class Cloud implements IScheduler {
 
     @Override
     public void cancelJob(String id) throws ISchedulerException {
-        System.out.println("Canceling job with id " + id);
-        System.out.println("AAAAAAAAAAAAAAAAAaaaaaaaaAAAAAAAAa");
+        LOGGER.info("Canceling job with id {}", id);
+
+        JobMeta meta = jobs.get(id);
+
+        meta = (meta != null) ? meta : loadJobMetaFromDisk(id);
+
+        if (meta == null) {
+            throw new ISchedulerException("job " + id + " not found");
+        }
+
+        try{
+            try{
+                String key = "jobs/" + id + "/status.json";
+                String body = "{\"state\":\"DESTROYED\",\"rc\":143}";
+                String type = "application/json";
+                s3.putString(meta.bucket(), key, body,  type);
+            } catch (Exception ignored){}
+
+            String instanceId = meta.instanceId();
+            if(instanceId != null && !instanceId.isBlank()) {
+                    ec2.terminateInstance(instanceId);
+            }
+        }catch(Exception e){
+            throw new ISchedulerException("Error canceling job " + id + " : " + e.getMessage(), e);
+        } finally {
+            deleteJobMeta(meta.jobId());
+        }
     }
 
     @Override
     public IJobInfo getJob(String id) throws ISchedulerException {
-        System.out.println("AAA: getJob");
-        return null;
+
     }
 
     @Override
     public List<IJobInfo> listJobs(Map<String, String> filters) throws ISchedulerException {
-        System.out.println("AAA: listJobs");
-        return null;
+        throw new UnsupportedOperationException();
     }
 
     @Override

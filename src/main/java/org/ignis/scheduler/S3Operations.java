@@ -243,4 +243,16 @@ public class S3Operations {
             }
         }
     }
+
+    public void putString(String bucket, String key, String content, String contentType) throws ISchedulerException {
+        S3Client s3 = awsFactory.createS3Client();
+        s3.putObject(
+                PutObjectRequest.builder()
+                        .bucket(bucket)
+                        .key(key)
+                        .contentType(contentType)
+                        .build(),
+                RequestBody.fromString(content)
+        );
+    }
 }
