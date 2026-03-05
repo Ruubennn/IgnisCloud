@@ -1,6 +1,7 @@
 package org.ignis.scheduler;
 
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.core.ResponseBytes;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.*;
@@ -255,4 +256,20 @@ public class S3Operations {
                 RequestBody.fromString(content)
         );
     }
+
+    public String getString(String bucket, String key) throws ISchedulerException {
+        try(var s3 = awsFactory.createS3Client()) {
+            ResponseBytes<GetObjectResponse> bytes = s3.getObjectAsBytes(
+                    GetObjectRequest.builder().bucket(bucket).key(key).build());
+            return bytes.asUtf8String();
+        } catch(NoSuchKeyException e) {return null;}
+          catch (S3Exception e) {
+              if (e.statusCode() == 404) return null;
+              throw new ISchedulerException("Failed to read s3://" + bucket + "/" + key + " (" + e.awsErrorDetails().errorMessage() + ")", e);
+          } catch (Exception e) {
+            throw new ISchedulerException("Failed to read s3://" + bucket + "/" + key, e);
+        }
+
+    }
+
 }
