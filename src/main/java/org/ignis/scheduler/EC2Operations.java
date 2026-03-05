@@ -17,7 +17,7 @@ public class EC2Operations {
     }
 
     // Reference [19], [22], [23]
-    public String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam, InstanceType instanceType) throws ISchedulerException {
+    public String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam, InstanceType instanceType, String iamInstanceProfile) throws ISchedulerException {
         Ec2Client ec2 = awsFactory.createEc2Client();
         try {
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
@@ -27,9 +27,9 @@ public class EC2Operations {
                     .minCount(1)
                     .subnetId(subnet)
                     .securityGroupIds(sgId)
-                    /*.iamInstanceProfile(IamInstanceProfileSpecification.builder()
-                            .arn(iam)
-                            .build())*/
+                    .iamInstanceProfile(IamInstanceProfileSpecification.builder()
+                            .name(iamInstanceProfile)
+                            .build())
                     /*TODO: analizar*/              .userData(Base64.getEncoder().encodeToString(userDataScript.getBytes(StandardCharsets.UTF_8)))
                     .tagSpecifications(TagSpecification.builder()
                             .resourceType(ResourceType.INSTANCE)

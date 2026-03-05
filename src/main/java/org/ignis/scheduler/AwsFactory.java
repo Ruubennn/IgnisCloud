@@ -53,7 +53,7 @@ public class AwsFactory {
         }
 
         if (isLocalStackMode()) {
-            if(getRegion() == null) builder.region(Region.US_WEST_2);
+            if(getRegion() == null) builder.region(Region.US_EAST_1);
             builder.endpointOverride(localStackUri)
                     .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")));
 
@@ -68,14 +68,14 @@ public class AwsFactory {
             builder.region(getRegion());
         }
         if (isLocalStackMode()) {
-            if(getRegion() == null) builder.region(Region.US_WEST_2);
+            if(getRegion() == null) builder.region(Region.US_EAST_1);
             builder
                     .endpointOverride(localStackUri)
                     .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")))
                     .serviceConfiguration(
                             S3Configuration.builder()
-                                    .pathStyleAccessEnabled(true)     // <-- CLAVE para LocalStack
-                                    .chunkedEncodingEnabled(false)    // <-- evita problemas de chunked
+                                    .pathStyleAccessEnabled(true)
+                                    .chunkedEncodingEnabled(false)
                                     .build());
         }
         return builder.build();
@@ -87,7 +87,7 @@ public class AwsFactory {
             builder.region(getRegion());
         }
         if (isLocalStackMode()) {
-            if(getRegion() == null) builder.region(Region.US_WEST_2);
+            if(getRegion() == null) builder.region(Region.US_EAST_1);
             builder
                     .endpointOverride(localStackUri)
                     .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")));

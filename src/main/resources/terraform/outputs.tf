@@ -10,10 +10,14 @@ output "sg_id" {
   value = aws_security_group.ignis_sg.id
 }
 
-output "iam_role_arn" {
-  value = aws_iam_role.ignis_scheduler_role.arn
-}
+//output "iam_role_arn" {
+ // value = aws_iam_role.ignis_scheduler_role.arn
+//}
 
 output "jobs_bucket_name" {
   value = aws_s3_bucket.ignis_jobs.bucket
 }
+
+//output "aws_iam_instance_profile" {
+ // value = aws_iam_instance_profile.ignis_profile.name
+//}

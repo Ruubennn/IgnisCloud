@@ -198,8 +198,9 @@ public class TerraformManager {
             outputs.put("subnet_id", getOutputValue(root, "subnet_id"));
             outputs.put("sg_id", getOutputValue(root, "sg_id"));
             outputs.put("vpc_id", getOutputValue(root, "vpc_id"));
-            outputs.put("iam_role_arn", getOutputValue(root, "iam_role_arn"));
+            //outputs.put("iam_role_arn", getOutputValue(root, "iam_role_arn"));
             outputs.put("jobs_bucket_name", getOutputValue(root, "jobs_bucket_name"));
+            //outputs.put("aws_iam_instance_profile", getOutputValue(root, "aws_iam_instance_profile"));
 
         } catch (Exception e){
             LOGGER.error("Failed to capture Terraform outputs in directory {}", workDir, e);

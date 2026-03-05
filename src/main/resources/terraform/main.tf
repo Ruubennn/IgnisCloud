@@ -1,23 +1,25 @@
 provider "aws" {
   region                      = var.aws_region
-  access_key                  = "test"
-  secret_key                  = "test"
-  skip_credentials_validation = true
-  skip_metadata_api_check     = true
-  skip_requesting_account_id  = true
+  //access_key                  = "test"
+  //secret_key                  = "test"
+  //skip_credentials_validation = true
+  //skip_metadata_api_check     = true
+  //skip_requesting_account_id  = true
 
-  endpoints {
-    ec2             = "http://localhost:4566"
-    networkmanager  = "http://localhost:4566"
-    iam             = "http://localhost:4566"
-    s3              = "http://s3.localhost.localstack.cloud:4566"
-    sts             = "http://localhost:4566"
-  }
+  //endpoints {
+    //ec2             = "http://localhost:4566"
+    //networkmanager  = "http://localhost:4566"
+    //iam             = "http://localhost:4566"
+    //s3              = "http://s3.localhost.localstack.cloud:4566"
+    //sts             = "http://localhost:4566"
+  //}
 }
 
 // VPC
 resource "aws_vpc" "ignis_vpc" {
   cidr_block = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support = true
   tags = {
     Name = "ignis_vpc"
   }
@@ -27,6 +29,7 @@ resource "aws_vpc" "ignis_vpc" {
 resource "aws_subnet" "ignis_subnet" {
   vpc_id = aws_vpc.ignis_vpc.id
   cidr_block = "10.0.1.0/24"
+  map_public_ip_on_launch = true
 
   tags = {
     Name = "ignis_subnet"
@@ -116,51 +119,59 @@ resource "aws_s3_bucket_public_access_block" "ignis_jobs" {
 }
 
 // IAM Role
-resource "aws_iam_role" "ignis_scheduler_role" {
-  name = "ignis-scheduler-role"
-  assume_role_policy =jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
-    }]
-  })
-}
+//resource "aws_iam_role" "ignis_scheduler_role" {
+//  name = "ignis-scheduler-role"
+//  assume_role_policy =jsonencode({
+//    Version = "2012-10-17"
+//    Statement = [{
+//      Action = "sts:AssumeRole"
+//      Effect = "Allow"
+//      Principal = {
+//        Service = "ec2.amazonaws.com"
+//      }
+//    }]
+//  })
+//}
 
 // IAM Policy
-resource "aws_iam_role_policy" "ignis_scheduler_policy" {
-  name = "ignis-scheduler-policy"
-  role = aws_iam_role.ignis_scheduler_role.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "ec2:RunInstances",
-        "ec2:TerminateInstances",
-        "ec2:DescribeInstances",
-        "ec2:CreateTags"
-      ]
-      Resource = "*"
-    }]
-  })
-}
+//resource "aws_iam_role_policy" "ignis_scheduler_policy" {
+//  name = "ignis-scheduler-policy"
+//  role = aws_iam_role.ignis_scheduler_role.id
+//  policy = jsonencode({
+//    Version = "2012-10-17"
+//    Statement = [{
+//      Effect = "Allow"
+//      Action = [
+//        "ec2:RunInstances",
+//        "ec2:TerminateInstances",
+//        "ec2:DescribeInstances",
+//        "ec2:CreateTags"
+//      ]
+//      Resource = "*"
+//    }]
+//  })
+//}
+//resource "aws_iam_role_policy" "ignis_s3_access" {
+ // name = "ignis-s3-access"
+ // role = aws_iam_role.ignis_scheduler_role.id
+ // policy = jsonencode({
+  //  Version = "2012-10-17"
+  //  Statement = [
+ //     {
+        //Effect = "Allow"
+        //Action = ["s3:ListBucket"]
+       // Resource = "arn:aws:s3:::${aws_s3_bucket.ignis_jobs.bucket}"
+      //},
+     // {
+    //    Effect = "Allow"
+   //     Action = ["s3:GetObject","s3:PutObject"]
+  //      Resource = "arn:aws:s3:::${aws_s3_bucket.ignis_jobs.bucket}/*"
+ //     }
+ //   ]
+ // })
+//}
 
-// IAM Role to the instances to download from S3
-resource "aws_iam_role_policy" "ignis_s3_access" {
-  name = "ignis-s3-access"
-  role = aws_iam_role.ignis_scheduler_role.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "s3:GetObject"
-      ]
-      Resource = "arn:aws:s3:::${aws_s3_bucket.ignis_jobs.bucket}/*"
-    }]
-  })
-}
+//resource "aws_iam_instance_profile" "ignis_profile" {
+//  name = "ignis-instance-profile"
+//  role = aws_iam_role.ignis_scheduler_role.name
+//}

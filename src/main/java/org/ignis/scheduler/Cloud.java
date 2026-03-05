@@ -77,7 +77,7 @@ public class Cloud implements IScheduler {
 
     private Region resolveRegion() throws  ISchedulerException {
         if(isLocalStackEnvironment()) {
-            return Region.US_WEST_2;
+            return Region.US_EAST_1;
         }
         else{
             String configuredRegion = System.getenv("IGNIS_AWS_REGION");
@@ -197,7 +197,7 @@ public class Cloud implements IScheduler {
 
     @Override
     public String createJob(String name, IClusterRequest driver, IClusterRequest... executors) throws ISchedulerException {
-
+        System.out.println("Test 1");
         String jobId = ISchedulerUtils.genId().substring(0, 8);
         String finalJobName = name.replace("/", "-") + "-" + jobId;
 
@@ -205,34 +205,49 @@ public class Cloud implements IScheduler {
 
         String subnet = terraformManager.requireOutput("subnet_id");
         String sg = terraformManager.requireOutput("sg_id");
-        String iamRoleArn = terraformManager.requireOutput("iam_role_arn");
+        //String iamRoleArn = terraformManager.requireOutput("iam_role_arn");
+        String iamRoleArn="";
         String bucket = terraformManager.requireOutput("jobs_bucket_name");
+        //String iamInstanceProfile = terraformManager.requireOutput("aws_iam_instance_profile");
 
-        if(subnet == null || sg == null || iamRoleArn == null || bucket == null) {
+        String iamInstanceProfile = System.getenv("IGNIS_IAM_INSTANCE_PROFILE");
+        if (iamInstanceProfile == null || iamInstanceProfile.isBlank()) {
+            throw new ISchedulerException("Missing IGNIS_IAM_INSTANCE_PROFILE (IAM creation disabled in this AWS account)");
+        }
+
+        System.out.println("Test 2");
+        if(subnet == null || sg == null || /*iamRoleArn == null ||*/ bucket == null) {
             throw new ISchedulerException("Terraform outputs not found");
         }
 
         try {
+            System.out.println("Test 3");
             List<IBindMount> binds = payloadResolver.buildPayloadBindsFromArgs(driver);
             byte[] bundle = bundleCreator.createBundleTarGz(binds);
             String bundleKey = s3.uploadJobBundle(bucket, jobId, bundle);
             String cmd = payloadResolver.resolveCommand(driver);
             String image = payloadResolver.resolveImage(driver);
+            System.out.println("Test 4");
 
             // TODO: despliegue en aws
             String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(),finalJobName, jobId,
                     bucket, bundleKey , image, cmd);
+            System.out.println("Test 5");
 
             InstanceType instanceType = resolveInstanceType(driver);
-            String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, resolveAMI(), subnet, sg, iamRoleArn, instanceType);
+            System.out.println("Test 6");
+            String instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, resolveAMI(), subnet, sg, iamRoleArn, instanceType, iamInstanceProfile);
+            System.out.println("Test 7");
             //s3.downloadJob(jobId, bucket);
 
             int cpus = driver.resources().cpus();
             long memory = driver.resources().memory();
             String gpu =  driver.resources().gpu();
             List<String> args = driver.resources().args();
+            System.out.println("Test 8");
 
             JobMeta meta = new JobMeta(finalJobName, finalJobName, bucket, instanceId, image, cmd, cpus, memory, gpu, args);
+            System.out.println("Test 9");
             jobs.put(finalJobName, meta);
             saveJobMeta(meta);
 
@@ -339,7 +354,7 @@ public class Cloud implements IScheduler {
                     .build();
 
             IClusterInfo cluster = IClusterInfo.builder()
-                    .id("driver")
+                    .id("0-driver")
                     .instances(1)
                     .containers(List.of(container))
                     .build();
@@ -362,9 +377,38 @@ public class Cloud implements IScheduler {
 
     @Override
     public IClusterInfo createCluster(String job, IClusterRequest request) throws ISchedulerException {
-        System.out.println("AAA: createCluster");
-        return null;
+        System.out.println("AAA: createCluster job=" + job + " instances=" + request.instances());
+
+        IContainerInfo dummy = IContainerInfo.builder()
+                .id("dummy-0")
+                .node("dummy")
+                .image("dummy")
+                .args(List.of())
+                .cpus(1)
+                .gpu(null)
+                .memory(1024L)
+                .time(null)
+                .user(null)
+                .writable(true)
+                .tmpdir(true)
+                .ports(List.of())
+                .binds(List.of())
+                .nodelist(List.of())
+                .hostnames(Map.of())
+                .env(Map.of())
+                .network(IContainerInfo.INetworkMode.HOST)
+                .status(IContainerInfo.IStatus.ACCEPTED)
+                .provider(IContainerInfo.IProvider.DOCKER)
+                .schedulerOptArgs(Map.of())
+                .build();
+
+        return IClusterInfo.builder()
+                .id("cluster-dummy")
+                .instances(1)
+                .containers(List.of(dummy))
+                .build();
     }
+
 
     @Override
     public void destroyCluster(String job, String id) throws ISchedulerException {
@@ -389,6 +433,7 @@ public class Cloud implements IScheduler {
         if (awsState == null) {
             return IContainerInfo.IStatus.UNKNOWN;
         }
+        System.out.println("AAA: getContainerStatus");
         return CLOUD_STATUS.getOrDefault(awsState.toLowerCase(), IContainerInfo.IStatus.UNKNOWN);
     }
 
