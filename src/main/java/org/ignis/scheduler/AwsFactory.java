@@ -13,7 +13,7 @@ import java.net.URI;
 
 public class AwsFactory {
 
-    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
+    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(AwsFactory.class);
     private static final String LOCALSTACK_ENDPOINT = "http://localhost:4566";
 
     private final Region region;

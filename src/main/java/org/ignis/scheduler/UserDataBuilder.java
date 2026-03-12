@@ -8,7 +8,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class UserDataBuilder {
-    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
+    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(UserDataBuilder.class);
 
     private static final String TEMPLATE_RESOURCE_PATH = "scripts/userdata.sh";
 

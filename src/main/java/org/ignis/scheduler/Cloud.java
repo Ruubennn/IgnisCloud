@@ -222,7 +222,18 @@ public class Cloud implements IScheduler {
 
         try {
             System.out.println("Test 3");
-            List<IBindMount> binds = payloadResolver.buildPayloadBindsFromArgs(driver);
+            List<IBindMount> binds = new ArrayList<>(payloadResolver.buildPayloadBindsFromArgs(driver));
+
+            String jarlibs = System.getenv("IGNIS_JARLIBS_PATH");
+            if (jarlibs != null && !jarlibs.isBlank()) {
+                Path jarsPath = Paths.get(jarlibs);
+                if (!Files.exists(jarsPath) || !Files.isDirectory(jarsPath)) {
+                    throw new ISchedulerException("IGNIS_JARLIBS_PATH does not exist or is not a directory: " + jarlibs);
+                }
+
+                binds.add(new IBindMount("/ignis/dfs/jarlibs", jarlibs, true));
+            }
+
             byte[] bundle = bundleCreator.createBundleTarGz(binds);
             String bundleKey = s3.uploadJobBundle(bucket, jobId, bundle);
             String cmd = payloadResolver.resolveCommand(driver);
@@ -246,9 +257,9 @@ public class Cloud implements IScheduler {
             List<String> args = driver.resources().args();
             System.out.println("Test 8");
 
-            JobMeta meta = new JobMeta(finalJobName, finalJobName, bucket, instanceId, image, cmd, cpus, memory, gpu, args);
+            JobMeta meta = new JobMeta(jobId, finalJobName, bucket, instanceId, image, cmd, cpus, memory, gpu, args);
             System.out.println("Test 9");
-            jobs.put(finalJobName, meta);
+            jobs.put(jobId, meta);
             saveJobMeta(meta);
 
             System.out.println("Salió del createJOB");
@@ -256,7 +267,7 @@ public class Cloud implements IScheduler {
 
         } catch (Exception e) {
             LOGGER.error("Error al interactuar con el SDK de AWS", e);
-            throw new ISchedulerException("No se pudo levantar la instancia en LocalStack: " + e.getMessage());
+            throw new ISchedulerException("No se pudo lanzar la instancia EC2: " + e.getMessage(), e);
         }
     }
 

@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 public class BundleCreator {
-    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
+    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(BundleCreator.class);
 
     private static final String STAGING_DIR_NAME = "staging";
     private static final String TAR_FILENAME = "bundle.tar.gz";

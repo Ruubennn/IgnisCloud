@@ -14,7 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class S3Operations {
-    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
+    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(S3Operations.class);
 
     private static final String JOBS_PREFIX = "jobs/";
     private static final String DEFAULT_BUNDLE_FILENAME = "bundle.tar.gz";

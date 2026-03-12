@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
 public class EC2Operations {
-    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
+    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(EC2Operations.class);
 
     private final AwsFactory awsFactory;
 
@@ -30,6 +30,7 @@ public class EC2Operations {
                     .iamInstanceProfile(IamInstanceProfileSpecification.builder()
                             .name(iamInstanceProfile)
                             .build())
+                    .instanceInitiatedShutdownBehavior(ShutdownBehavior.TERMINATE)
                     /*TODO: analizar*/              .userData(Base64.getEncoder().encodeToString(userDataScript.getBytes(StandardCharsets.UTF_8)))
                     .tagSpecifications(TagSpecification.builder()
                             .resourceType(ResourceType.INSTANCE)

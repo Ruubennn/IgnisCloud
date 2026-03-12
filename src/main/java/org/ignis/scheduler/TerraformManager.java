@@ -14,7 +14,7 @@ import java.util.jar.JarFile;
 import java.util.stream.Stream;
 
 public class TerraformManager {
-    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
+    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(TerraformManager.class);
 
     private static final String TF_BIN_PROP = "ignis.terraform.bin";
     private static final String TF_RESOURCE_DIR = "terraform";
