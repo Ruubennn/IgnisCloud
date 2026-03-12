@@ -27,6 +27,7 @@ public class Cloud implements IScheduler {
     private final UserDataBuilder userDataBuilder;
     private final BundleCreator bundleCreator;
     private final PayloadResolver payloadResolver;
+    private final ImagePublisher imagePublisher;
 
     private static record JobMeta(
       String jobId,
@@ -67,6 +68,7 @@ public class Cloud implements IScheduler {
         this.userDataBuilder = new UserDataBuilder();
         this.bundleCreator = new BundleCreator();
         this.payloadResolver = new PayloadResolver();
+        this.imagePublisher = new ImagePublisher(awsFactory);
 
         this.terraformManager.provision();
     }
@@ -142,13 +144,23 @@ public class Cloud implements IScheduler {
         }
     }
 
+    private Path baseDir() {
+        String base = System.getenv("IGNIS_CLOUD_HOME");
+        if (base != null && !base.isBlank()) {
+            return Paths.get(base);
+        }
+        return Paths.get("/var/tmp/ignis-cloud");
+    }
+
     private Path jobsDir() {
-        return Paths.get(System.getProperty("user.home"), ".ignis-cloud", "jobs");
+        return baseDir().resolve("jobs");
     }
 
     private void saveJobMeta(JobMeta meta) throws IOException {
-        Files.createDirectories(jobsDir());
-        Path file = jobsDir().resolve(meta.jobId() + ".json");
+        Path dir = jobsDir();
+        Files.createDirectories(dir);
+
+        Path file = dir.resolve(meta.jobId() + ".json");
         mapper.writeValue(file.toFile(), meta);
     }
 
@@ -224,21 +236,18 @@ public class Cloud implements IScheduler {
             System.out.println("Test 3");
             List<IBindMount> binds = new ArrayList<>(payloadResolver.buildPayloadBindsFromArgs(driver));
 
-            String jarlibs = System.getenv("IGNIS_JARLIBS_PATH");
-            if (jarlibs != null && !jarlibs.isBlank()) {
-                Path jarsPath = Paths.get(jarlibs);
-                if (!Files.exists(jarsPath) || !Files.isDirectory(jarsPath)) {
-                    throw new ISchedulerException("IGNIS_JARLIBS_PATH does not exist or is not a directory: " + jarlibs);
-                }
-
-                binds.add(new IBindMount("/ignis/dfs/jarlibs", jarlibs, true));
-            }
-
             byte[] bundle = bundleCreator.createBundleTarGz(binds);
             String bundleKey = s3.uploadJobBundle(bucket, jobId, bundle);
             String cmd = payloadResolver.resolveCommand(driver);
-            String image = payloadResolver.resolveImage(driver);
+            //String image = payloadResolver.resolveImage(driver);
+            String localImage = driver.resources().image();
+            String image = imagePublisher.ensurePublished(localImage);
             System.out.println("Test 4");
+            /*System.out.println("IMAGEN: " + driver.resources().image());
+            System.out.println("IMAGE_PAYLOAD: " + image);
+            System.out.println("IMAGE_CMD: " + cmd);*/
+
+            // TODO: ECR sería aquí
 
             // TODO: despliegue en aws
             String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(),finalJobName, jobId,
@@ -260,9 +269,10 @@ public class Cloud implements IScheduler {
             JobMeta meta = new JobMeta(jobId, finalJobName, bucket, instanceId, image, cmd, cpus, memory, gpu, args);
             System.out.println("Test 9");
             jobs.put(jobId, meta);
-            saveJobMeta(meta);
+            //saveJobMeta(meta);
 
             System.out.println("Salió del createJOB");
+            System.out.println("IMAGEN: " + driver.resources().image());
             return finalJobName;
 
         } catch (Exception e) {
@@ -276,7 +286,9 @@ public class Cloud implements IScheduler {
         LOGGER.info("Canceling job with id {}", id);
 
         JobMeta meta = jobs.get(id);
-        meta = (meta != null) ? meta : loadJobMetaFromDisk(id);
+        if (meta == null) {
+            meta = loadJobMetaFromDisk(id);
+        }
 
         if (meta == null) {
             throw new ISchedulerException("job " + id + " not found");
@@ -326,11 +338,17 @@ public class Cloud implements IScheduler {
         LOGGER.info("Getting job with id {}", id);
 
         JobMeta meta = jobs.get(id);
-        meta = (meta != null) ? meta : loadJobMetaFromDisk(id);
+        if (meta == null) {
+            meta = loadJobMetaFromDisk(id);
+            if(meta != null){
+                jobs.put(id, meta);
+            }
+        }
 
         if (meta == null) {
             throw new ISchedulerException("job " + id + " not found");
         }
+
         try{
             IContainerInfo.IStatus status = statusFromS3(meta);
 

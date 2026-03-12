@@ -21,7 +21,7 @@ public class BundleCreator {
     // Reference: [32]
     public byte[] createBundleTarGz(List<IBindMount> binds) throws ISchedulerException {
         if(binds == null || binds.isEmpty()) {
-            throw new ISchedulerException("Binds empty");
+            throw new ISchedulerException("No payload or jar libraries were detected to bundle.");
         }
 
         Path tmpDir = null;

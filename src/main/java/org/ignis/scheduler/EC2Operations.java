@@ -44,9 +44,17 @@ public class EC2Operations {
 
             LOGGER.info("Instance launched: {}", instanceId);
             return instanceId;
-        }catch (Exception e){
+        }/*catch (Exception e){
             LOGGER.error("Failed to create EC2 instance", e);
             throw new ISchedulerException("Failed to create EC2 instance", e);
+        }*/
+        catch (Ec2Exception e) {
+            LOGGER.error("Failed to create EC2 instance. AWS error: {} - {}",
+                    e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : "unknown",
+                    e.awsErrorDetails() != null ? e.awsErrorDetails().errorMessage() : e.getMessage(),
+                    e);
+            throw new ISchedulerException("Failed to create EC2 instance: " +
+                    (e.awsErrorDetails() != null ? e.awsErrorDetails().errorMessage() : e.getMessage()), e);
         }
     }
 

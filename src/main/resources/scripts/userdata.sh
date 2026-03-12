@@ -65,7 +65,17 @@ aws --region "$REGION" s3 cp "s3://$BUCKET/$BUNDLE_KEY" /tmp/bundle.tar.gz
 mkdir -p /ignis
 tar -xzf /tmp/bundle.tar.gz -C /
 
+
+# Reference: [49]
+REGISTRY="$(echo "$IMAGE" | cut -d/ -f1)"
+
+echo "[user-data] logging into registry $REGISTRY"
+aws ecr get-login-password --region "$REGION" |
+    docker login --username AWS --password stdin "$REGISTRY"
+
+echo "[user-data] pulling image $IMAGE"
 docker pull "$IMAGE"
+
 
 START_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
 
@@ -139,7 +149,7 @@ docker run --rm \
   -e IGNIS_SCHEDULER_ENV_JOB \
   -e IGNIS_SCHEDULER_ENV_CONTAINER \
   -v /ignis/dfs:/ignis/dfs \
-  -v /ignis/dfs/jarlibs:/opt/ignis/lib/java:ro \
+  #-v /ignis/dfs/jarlibs:/opt/ignis/lib/java:ro \
   "$IMAGE" /bin/bash -lc "$CMD" > /tmp/out.txt 2>&1
 rc=$?
 set -e

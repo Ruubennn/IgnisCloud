@@ -45,30 +45,36 @@ public class PayloadResolver {
 
     public String resolveCommand(IClusterRequest driver) {
         List<String> args = driver.resources().args();
-        if(args == null || args.isEmpty()) return "";
+        if (args == null || args.isEmpty()) return "";
 
         Path mainLocalScript = detectMainScript(args);
-        String cloudScriptPath = (mainLocalScript!=null) ? resolveCloudScriptPath(driver) : null;
+        String cloudScriptPath = (mainLocalScript != null) ? resolveCloudScriptPath(driver) : null;
 
         int startIndex = 0;
-        if(!args.isEmpty() && "ignis-job".equals(args.get(0))){
-            startIndex = 2;
+        if ("ignis-job".equals(args.get(0))) {
+            startIndex = 1;
         }
 
         List<String> command = new ArrayList<>();
-        for(int i = startIndex; i < args.size(); i++){
-            String arg =  args.get(i);
+        for (int i = startIndex; i < args.size(); i++) {
+            String arg = args.get(i);
+            if (arg == null) continue;
 
-            if (mainLocalScript != null && arg.equals(mainLocalScript.toString())) {
-                command.add(cloudScriptPath);
-            } else {
-                command.add(arg);
+            if (mainLocalScript != null) {
+                Path candidate = Paths.get(arg);
+                try {
+                    if (Files.exists(candidate) &&
+                            Files.isRegularFile(candidate) &&
+                            candidate.toAbsolutePath().normalize().equals(mainLocalScript)) {
+                        command.add(cloudScriptPath);
+                        continue;
+                    }
+                } catch (Exception ignored) {}
             }
+
+            command.add(arg);
         }
 
-        if (command.isEmpty() && cloudScriptPath != null) {
-            return cloudScriptPath;
-        }
         return String.join(" ", command);
     }
 

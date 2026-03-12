@@ -5,6 +5,7 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.ecr.EcrClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.ssm.SsmClient;
@@ -77,6 +78,21 @@ public class AwsFactory {
                                     .pathStyleAccessEnabled(true)
                                     .chunkedEncodingEnabled(false)
                                     .build());
+        }
+        return builder.build();
+    }
+
+    public EcrClient createECRClient(){
+        var builder = EcrClient.builder();
+        if(getRegion() != null) {
+            builder.region(getRegion());
+        }
+        if (isLocalStackMode()) {
+            if(getRegion() == null) builder.region(Region.US_EAST_1);
+            builder
+                    .endpointOverride(localStackUri)
+                    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")));
+
         }
         return builder.build();
     }
