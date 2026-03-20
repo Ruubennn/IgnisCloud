@@ -91,6 +91,10 @@ cleanup_and_finish() {
       "s3://$BUCKET/jobs/$JOB_ID/results/" || true
   fi
 
+  aws --region "$REGION" s3 sync "/ignis/dfs/payload/" \
+    "s3://$BUCKET/jobs/$JOB_ID/" \
+    --exclude "*.py" --quiet || true
+
   echo "[user-data] looking for wordcount results..."
   find /ignis /opt/ignis/jobs/$JOB_ID -name "wordcount*" 2>/dev/null || echo "[user-data] no wordcount files found"
 
@@ -194,9 +198,15 @@ docker run --rm \
     '"$CMD"'
     DRIVER_RC=$?
 
+    echo "===== FIND WORDCOUNT ====="
+    find / -name "wordcount*" -not -path "*/proc/*" -not -path "*/sys/*" 2>/dev/null
+    echo "===== END FIND WORDCOUNT ====="
+
     echo "===== BACKEND LOG ====="
     cat /tmp/backend.log
     echo "===== END BACKEND LOG ====="
+
+
 
     exit $DRIVER_RC
   ' > /tmp/out.txt 2>&1
