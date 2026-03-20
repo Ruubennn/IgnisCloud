@@ -25,8 +25,7 @@ public class S3Operations {
         this.awsFactory = awsFactory;
     }
 
-    public String uploadJobBundle(String bucket, String jobId, byte[] bundleData)
-            throws ISchedulerException {
+    public String uploadJobBundle(String bucket, String jobId, byte[] bundleData) throws ISchedulerException {
         return uploadFile(bucket, jobId, DEFAULT_BUNDLE_FILENAME, bundleData);
     }
 
@@ -48,6 +47,59 @@ public class S3Operations {
             LOGGER.error("Failed to upload To S3", e);
             throw new ISchedulerException("Failed to upload To S3", e);
         }
+    }
+
+    // TODO: unificar uploadFile + uploadLargeFile (Solo cambia el RequestBody
+    /*public String uploadFile(String bucket, String jobId, String fileName, byte[] data, Path localPathIfLarge) throws ISchedulerException {
+        String key = buildKey(jobId, fileName);
+        S3Client s3 = awsFactory.createS3Client();
+
+        PutObjectRequest request = PutObjectRequest.builder()
+                .bucket(bucket)
+                .key(key)
+                .build();
+
+        RequestBody body;
+        if (localPathIfLarge != null && Files.exists(localPathIfLarge)) {
+            body = RequestBody.fromFile(localPathIfLarge);  // streaming
+            LOGGER.debug("Uploading large file via stream: {}", key);
+        } else if (data != null) {
+            body = RequestBody.fromBytes(data);
+            LOGGER.debug("Uploading small data: {}", key);
+        } else {
+            throw new IllegalArgumentException("No data or path provided");
+        }
+
+        s3.putObject(request, body);
+        return key;
+    }*/
+
+    // Reference: [27] + streaming para ficheros grandes
+    public String uploadLargeFile(String bucket, String jobId, String relativePath, Path localPath) throws ISchedulerException {
+        if (!Files.exists(localPath) || !Files.isRegularFile(localPath)) {
+            throw new IllegalArgumentException("Large file does not exist: " + localPath);
+        }
+
+        String key = JOBS_PREFIX + jobId + "/payload/large/" + stripLeadingSlash(relativePath);
+        S3Client s3Client = awsFactory.createS3Client();
+
+        try {
+            PutObjectRequest put = PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(key)
+                    .build();
+
+            s3Client.putObject(put, RequestBody.fromFile(localPath)); // ¡streaming! No carga en memoria
+            LOGGER.info("Large file uploaded directly to S3: {}", key);
+            return key;
+        } catch (Exception e) {
+            LOGGER.error("Failed to upload large file", e);
+            throw new ISchedulerException("Failed to upload large file to S3", e);
+        }
+    }
+
+    private String stripLeadingSlash(String p) {
+        return (p == null || p.isEmpty()) ? "" : p.replaceFirst("^/+", "");
     }
 
     private void validateUploadParams(String bucket, String jobId, String filename, byte[] data){

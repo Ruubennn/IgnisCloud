@@ -27,13 +27,34 @@ public class PayloadResolver {
         return null;
     }
 
-    public List<IBindMount> buildPayloadBindsFromArgs(IClusterRequest driver){
+    public List<IBindMount> buildPayloadBindsFromArgs(IClusterRequest driver) {
+        Path script = detectMainScript(driver.resources().args());
+        if (script == null) {
+            return List.of();
+        }
+
+        // ── CAMBIO IMPORTANTE ────────────────────────────────
+        Path scriptDir = script.getParent();                    // ← directorio padre
+        if (scriptDir == null || !Files.isDirectory(scriptDir)) {
+            // fallback: solo el script (caso raro)
+            String cloudTarget = CLOUD_PAYLOAD_DIR + "/" + script.getFileName();
+            return List.of(new IBindMount(cloudTarget, script.toString(), true));
+        }
+
+        // Subimos TODO el directorio donde está el script
+        // → /ignis/dfs/payload/ contendrá test.py, text.txt, test_2mb.txt, etc.
+        return List.of(
+                new IBindMount(CLOUD_PAYLOAD_DIR, scriptDir.toAbsolutePath().toString(), true)
+        );
+    }
+
+    /*public List<IBindMount> buildPayloadBindsFromArgs(IClusterRequest driver){
         Path script = detectMainScript(driver.resources().args());
         if(script == null) return List.of();
 
         String cloudTarget = CLOUD_PAYLOAD_DIR + "/" + script.getFileName();
         return List.of(new IBindMount(cloudTarget, script.toString(), true));
-    }
+    }*/
 
     public String resolveCloudScriptPath(IClusterRequest driver) {
         Path script = detectMainScript(driver.resources().args());
@@ -52,7 +73,7 @@ public class PayloadResolver {
 
         int startIndex = 0;
         if ("ignis-job".equals(args.get(0))) {
-            startIndex = 1;
+            startIndex = 1; // TODO: con el prueba.sh para que IMAGE_CMD = python3 /ignis/dfs/payload/test.py es 2
         }
 
         List<String> command = new ArrayList<>();

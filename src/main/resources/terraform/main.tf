@@ -30,6 +30,7 @@ resource "aws_subnet" "ignis_subnet" {
   vpc_id = aws_vpc.ignis_vpc.id
   cidr_block = "10.0.1.0/24"
   map_public_ip_on_launch = true
+  availability_zone = "us-east-1a" //var.availability_zone
 
   tags = {
     Name = "ignis_subnet"

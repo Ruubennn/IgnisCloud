@@ -5,19 +5,14 @@ exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&
 
 echo "[user-data] starting..."
 
+# ── Instalación de dependencias ──────────────────────────────────────────────
 if grep -qi "Amazon Linux" /etc/os-release; then
   echo "[user-data] detected Amazon Linux"
-
   dnf -y makecache
   dnf -y update
-
-  # Cambiar curl-minimal/libcurl-minimal por las versiones completas
   dnf -y swap curl-minimal curl-full --allowerasing || true
   dnf -y swap libcurl-minimal libcurl-full --allowerasing || true
-
-  # Instalar dependencias en el HOST
   dnf -y install tar gzip docker awscli-2
-
   systemctl enable --now docker
 else
   echo "[user-data] non-Amazon Linux, using apt fallback"
@@ -26,13 +21,13 @@ else
   systemctl enable --now docker
 fi
 
-# Verificaciones en host
-command -v aws >/dev/null 2>&1 || { echo "[user-data] ERROR: aws not found"; exit 1; }
+command -v aws    >/dev/null 2>&1 || { echo "[user-data] ERROR: aws not found";    exit 1; }
 command -v docker >/dev/null 2>&1 || { echo "[user-data] ERROR: docker not found"; exit 1; }
 
 docker --version
 aws --version || true
 
+# ── Variables de entorno ─────────────────────────────────────────────────────
 export REGION='{{REGION}}'
 export BUCKET='{{BUCKET}}'
 export JOB_ID='{{JOB_ID}}'
@@ -40,11 +35,11 @@ export JOB_NAME='{{JOB_NAME}}'
 export BUNDLE_KEY='{{BUNDLE_KEY}}'
 export IMAGE='{{IMAGE}}'
 export CMD='{{CMD}}'
-export IGNIS_SCHEDULER_ENV_JOB='{{JOB_NAME}}'
+export IGNIS_SCHEDULER_ENV_JOB="$JOB_ID"
+export IGNIS_JOB_ID="$JOB_ID"
 
-# Obtener instance-id en el HOST
+# ── Instance ID desde metadata ───────────────────────────────────────────────
 IID="unknown"
-TOKEN=""
 TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
 
@@ -56,102 +51,171 @@ else
 fi
 
 export IGNIS_SCHEDULER_ENV_CONTAINER="$IID"
-
 echo "[user-data] instance-id=$IID"
-echo "[user-data] downloading bundle s3://$BUCKET/$BUNDLE_KEY"
 
+# ── Descarga del bundle y payload ────────────────────────────────────────────
+echo "[user-data] downloading bundle s3://$BUCKET/$BUNDLE_KEY"
 aws --region "$REGION" s3 cp "s3://$BUCKET/$BUNDLE_KEY" /tmp/bundle.tar.gz
 
 mkdir -p /ignis
 tar -xzf /tmp/bundle.tar.gz -C /
 
+echo "[user-data] downloading large payload files from S3..."
+aws s3 sync "s3://${BUCKET}/jobs/${JOB_ID}/payload/large/" "/ignis/dfs/payload/" --quiet || true
+echo "[user-data] large files ready."
 
-# Reference: [49]
-REGISTRY="$(echo "$IMAGE" | cut -d/ -f1)"
-
-echo "[user-data] logging into registry $REGISTRY"
-aws ecr get-login-password --region "$REGION" |
-    docker login --username AWS --password stdin "$REGISTRY"
-
+# ── Pull de la imagen Docker ─────────────────────────────────────────────────
 echo "[user-data] pulling image $IMAGE"
 docker pull "$IMAGE"
 
-
 START_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
 
+# ── Función de limpieza y finalización ──────────────────────────────────────
 cleanup_and_finish() {
-  rc=$1
+  local rc=$1
   set +e
 
   END_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
-  state="FAILED"
+  local state="FAILED"
   [ "$rc" -eq 0 ] && state="FINISHED"
 
   echo "[user-data] job finished with rc=$rc state=$state"
 
-  # Subir salida estándar/errores del job
   if [ -f /tmp/out.txt ]; then
     aws --region "$REGION" s3 cp /tmp/out.txt \
       "s3://$BUCKET/jobs/$JOB_ID/out.txt" || true
   fi
 
-  # Subir resultados si existen
-  RESULTS_DIR="/ignis/dfs/output"
-  if [ -d "$RESULTS_DIR" ]; then
-    aws --region "$REGION" s3 sync "$RESULTS_DIR" \
+  if [ -d "/ignis/dfs/output" ]; then
+    aws --region "$REGION" s3 sync "/ignis/dfs/output" \
       "s3://$BUCKET/jobs/$JOB_ID/results/" || true
   fi
 
-  # Escribir y subir status.json
+  echo "[user-data] looking for wordcount results..."
+  find /ignis /opt/ignis/jobs/$JOB_ID -name "wordcount*" 2>/dev/null || echo "[user-data] no wordcount files found"
+
+  if [ -f "/ignis/dfs/payload/wordcount.txt" ]; then
+      echo "[user-data] found wordcount in payload"
+      aws --region "$REGION" s3 cp "/ignis/dfs/payload/wordcount.txt" \
+        "s3://$BUCKET/jobs/$JOB_ID/results/wordcount.txt" || true
+  fi
+
+  aws --region "$REGION" s3 sync "/opt/ignis/jobs/$JOB_ID/" \
+    "s3://$BUCKET/jobs/$JOB_ID/results/" --quiet || true
+
   printf '{"state":"%s","rc":%s,"start":"%s","end":"%s"}\n' \
     "$state" "$rc" "$START_TS" "$END_TS" > /tmp/status.json
 
   aws --region "$REGION" s3 cp /tmp/status.json \
     "s3://$BUCKET/jobs/$JOB_ID/status.json" || true
 
-# Autoterminar la instancia (best effort)
-#if [ -n "${IID:-}" ] && [ "$IID" != "unknown" ]; then
-#  echo "[user-data] terminating instance $IID"
-#  if ! aws --region "$REGION" ec2 terminate-instances --instance-ids "$IID"; then
-#    echo "[user-data] WARNING: could not self-terminate instance due to IAM permissions"
-#  fi
-#else
-#  echo "[user-data] could not resolve instance-id, skipping self-termination"
-#fi
+  echo "[user-data] shutting down instance"
+  shutdown -h now
 
-echo "[user-data] shutting down instance"
-shutdown -h now
-
-exit "$rc"
+  exit "$rc"
 }
 
-echo "[user-data] running job in container"
+# ── Restaurar job-meta desde S3 ──────────────────────────────────────────────
+echo "[user-data] restoring job meta from S3"
+mkdir -p /var/tmp/ignis-cloud/jobs
+
+aws --region "$REGION" s3 cp \
+  "s3://$BUCKET/jobs/$JOB_ID/job-meta.json" \
+  "/var/tmp/ignis-cloud/jobs/$JOB_ID.json"
+
+echo "[user-data] restored meta:"
+cat "/var/tmp/ignis-cloud/jobs/$JOB_ID.json" || true
+
+# ──------ INVECIÓN DE CLAUDE con el problema de JOB_SOCKETS, elijo creer ─────────────────────────────────────────────────
+
+mkdir -p "/opt/ignis/jobs/$JOB_ID/sockets"
+chmod 777 "/opt/ignis/jobs/$JOB_ID/sockets"
+
+# ── Ejecución del contenedor ─────────────────────────────────────────────────
+echo "[user-data] launching Ignis backend + driver in container"
 echo "[user-data] CMD=$CMD"
 
 set +e
 
-echo "[user-data] checking bundled jarlibs"
-ls -lah /ignis/dfs || true
-ls -lah /ignis/dfs/jarlibs || true
-
-#mkdir -p /tmp/ignis-jars
-#if [ -d /ignis/dfs/jarlibs ] && compgen -G "/ignis/dfs/jarlibs/*.jar" > /dev/null; then
-#  cp /ignis/dfs/jarlibs/*.jar /opt/ignis/lib/java/
-#else
-#  echo "[user-data] ERROR: no jarlibs found in /ignis/dfs/jarlibs"
-#  exit 1
-#fi
-
 docker run --rm \
   --network host \
-  -e IGNIS_SCHEDULER_TYPE=cloud \
+  -e IGNIS_SCHEDULER_NAME=Cloud \
   -e IGNIS_SCHEDULER_URL=cloud://aws \
-  -e IGNIS_SCHEDULER_ENV_JOB \
-  -e IGNIS_SCHEDULER_ENV_CONTAINER \
+  -e IGNIS_JOB_ID="$JOB_ID" \
+  -e IGNIS_SCHEDULER_ENV_JOB="$JOB_ID" \
+  -e IGNIS_JOB_DIR="/opt/ignis/jobs/$JOB_ID" \
+  -e IGNIS_SCHEDULER_ENV_CONTAINER="$IID" \
+  -e IGNIS_HOME=/opt/ignis \
+  -e IGNIS_JOB_SOCKETS="/opt/ignis/jobs/$JOB_ID/sockets" \
+  -e IGNIS_WDIR="/ignis/dfs/payload" \
   -v /ignis/dfs:/ignis/dfs \
-  #-v /ignis/dfs/jarlibs:/opt/ignis/lib/java:ro \
-  "$IMAGE" /bin/bash -lc "$CMD" > /tmp/out.txt 2>&1
+  -v /var/tmp/ignis-cloud:/var/tmp/ignis-cloud \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "/opt/ignis/jobs/$JOB_ID/sockets:/opt/ignis/jobs/$JOB_ID/sockets" \
+  -v /usr/bin/docker:/usr/bin/docker \
+  "$IMAGE" /bin/bash -lc '
+    echo "[container] preparing environment..."
+    mkdir -p /var/tmp/ignis/jobs
+    ln -sf /var/tmp/ignis-cloud/jobs/'"$JOB_ID"'.json /var/tmp/ignis/jobs/'"$JOB_ID"'.json
+    chmod -R 777 /var/tmp/ignis
+    chmod 777 /tmp
+
+    echo "[container] starting backend..."
+    /opt/ignis/bin/ignis-backend > /tmp/backend.log 2>&1 &
+    BACKEND_PID=$!
+
+    echo "[container] waiting for backend socket..."
+    SOCK_PATH=""
+    for i in $(seq 1 30); do
+      SOCK_PATH=$(find /tmp /var/tmp /opt/ignis -name "*.sock" 2>/dev/null | head -1)
+      if [ -n "$SOCK_PATH" ]; then
+        echo "[container] socket found at $SOCK_PATH after ${i}s"
+        break
+      fi
+      if ! kill -0 $BACKEND_PID 2>/dev/null; then
+        echo "[container] ERROR: backend died before socket appeared"
+        echo "===== BACKEND LOG ====="
+        cat /tmp/backend.log
+        echo "===== END BACKEND LOG ====="
+        exit 1
+      fi
+      sleep 1
+    done
+
+    if [ -z "$SOCK_PATH" ]; then
+      echo "[container] ERROR: socket never appeared after 30s"
+      echo "===== BACKEND LOG ====="
+      cat /tmp/backend.log
+      echo "===== END BACKEND LOG ====="
+      exit 1
+    fi
+
+    echo "[container] backend ready, launching driver..."
+    '"$CMD"'
+    DRIVER_RC=$?
+
+    echo "===== BACKEND LOG ====="
+    cat /tmp/backend.log
+    echo "===== END BACKEND LOG ====="
+
+    exit $DRIVER_RC
+  ' > /tmp/out.txt 2>&1
+
 rc=$?
 set -e
+
+echo "===== SSH TEST ====="
+ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p 1963 root@localhost echo "SSH_OK" 2>&1 || true
+echo "===== END SSH TEST ====="
+
+echo "===== EXECUTOR LOGS ====="
+docker logs "${JOB_ID}-executor-0" 2>&1 || true
+echo "===== END EXECUTOR LOGS ====="
+
+echo "===== DOCKER PS FINAL ====="
+docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || true
+echo "===== END DOCKER PS FINAL ====="
+
+
 
 cleanup_and_finish "$rc"
