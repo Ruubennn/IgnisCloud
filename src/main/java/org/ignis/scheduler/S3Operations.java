@@ -199,10 +199,12 @@ public class S3Operations {
 
        List<S3Object> objects = listObjectsInBucket(bucket, prefix);
        int succesCount = 0;
-       S3Client s3 = this.awsFactory.createS3Client();
 
-       for(S3Object s3Object : objects) {
-           String key =  s3Object.key();
+       try(S3Client s3 = this.awsFactory.createS3Client()){
+
+
+        for(S3Object s3Object : objects) {
+               String key =  s3Object.key();
 
            String relativePath = key.substring(prefix.length());
            if(relativePath.isEmpty()) continue;
@@ -224,17 +226,18 @@ public class S3Operations {
            } catch (Exception e){
                throw new ISchedulerException("Error downloading", e);
            }
+        }
        }
        LOGGER.info("Download S3 Objects: {}", objects);
        return succesCount;
     }
 
-    public void downloadJob(String jobId, String bucket) throws ISchedulerException {
+   /* public void downloadJob(String jobId, String bucket) throws ISchedulerException {
         if (jobId == null || jobId.trim().isEmpty()) {
             throw new IllegalArgumentException("jobId should not be empty");
         }
 
-        String prefix = "jobs/" + jobId.trim() + "/";
+        String prefix = "jobs/" + jobId.trim() + "/results/";
         String configuredDir = System.getenv("IGNIS_DOWNLOAD_DIR");
 
         String baseDir;
@@ -259,7 +262,37 @@ public class S3Operations {
         } catch (Exception e) {
             throw new ISchedulerException("Failure downloading objects at job " + jobId, e);
         }
+    }*/
+
+    public void downloadJob(String jobId, String bucket) throws ISchedulerException {
+        if (jobId == null || jobId.trim().isEmpty()) {
+            throw new IllegalArgumentException("jobId should not be empty");
+        }
+
+        String prefix = "jobs/" + jobId.trim() + "/results/";
+
+        String configuredDir = System.getenv("IGNIS_DOWNLOAD_DIR");
+        String localDir;
+        if (configuredDir != null && !configuredDir.trim().isEmpty()) {
+            localDir = configuredDir.trim();
+            LOGGER.debug("Using directory configured as environment variable: {}", localDir);
+        } else {
+            localDir = Paths.get("").toAbsolutePath().toString();
+            LOGGER.debug("IGNIS_DOWNLOAD_DIR not found. Using current directory: {}", localDir);
+        }
+
+        try {
+            Files.createDirectories(Paths.get(localDir));
+            LOGGER.info("Downloading results for job {} → target: {}", jobId, localDir);
+            int count = downloadObjects(bucket, prefix, localDir);
+            LOGGER.info("Download completed: {} objects in {}", count, localDir);
+        } catch (IOException e) {
+            throw new ISchedulerException("The download directory could not be created: " + localDir, e);
+        } catch (Exception e) {
+            throw new ISchedulerException("Failure downloading results for job " + jobId, e);
+        }
     }
+
 
     public void deleteJobObjects(String bucket, String jobId) throws ISchedulerException {
         if (jobId == null || jobId.trim().isEmpty()) {

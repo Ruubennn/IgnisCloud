@@ -64,6 +64,8 @@ public class Cloud implements IScheduler {
     private final Map<String, IContainerInfo.IStatus> runtimeStatus = new ConcurrentHashMap<>();
     private final String dockerBin = System.getenv().getOrDefault("IGNIS_DOCKER_BIN", "/usr/bin/docker");
 
+    private final Set<String> downloadedJobs = ConcurrentHashMap.newKeySet();
+
     public Cloud(String url) throws ISchedulerException, Exception {
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
@@ -312,6 +314,42 @@ public class Cloud implements IScheduler {
             //saveJobMeta(meta);
             saveJobMetaToS3(meta);
 
+            // Espera para descargar
+            long maxWaitMs = 10 * 60 * 1000; // 10 mins
+            long start = System.currentTimeMillis();
+            int attempt = 0;
+
+            while (true) {
+                IContainerInfo.IStatus status = statusFromS3(meta);
+
+                if (status == IContainerInfo.IStatus.FINISHED) {
+                    System.out.println(); // salto de línea para limpiar la línea de progreso
+                    System.out.println("[ignis-cloud] Job completed. Downloading results...");
+                    s3.downloadJob(jobId, bucket);
+                    System.out.println("[ignis-cloud] Results downloaded successfully.");
+                    break;
+                } else if (status == IContainerInfo.IStatus.ERROR || status == IContainerInfo.IStatus.DESTROYED) {
+                    System.out.println();
+                    System.out.println("[ignis-cloud] Job failed with status: " + status);
+                    break;
+                }
+
+                long elapsed = (System.currentTimeMillis() - start) / 1000;
+                long remaining = (maxWaitMs / 1000) - elapsed;
+                attempt++;
+                System.out.printf("\r[ignis-cloud] Job %s running... (elapsed: %ds, timeout in: %ds, checks: %d)   ",
+                        jobId, elapsed, remaining, attempt);
+                System.out.flush();
+
+                if (System.currentTimeMillis() - start > maxWaitMs) {
+                    System.out.println();
+                    System.out.println("[ignis-cloud] Timeout reached. Results available at: s3://" + bucket + "/jobs/" + jobId + "/");
+                    break;
+                }
+
+                Thread.sleep(10000);
+            }
+
 
             LOGGER.info("Created job with name {} and id {}", finalJobName, jobId);
             //return finalJobName;
@@ -392,13 +430,6 @@ public class Cloud implements IScheduler {
         }
 
         try{
-            /*IContainerInfo.IStatus status = statusFromS3(meta);
-            System.out.println("Javi Rodriguez");
-            if (status == null) {
-                String awsState = ec2.getInstanceState(meta.instanceId());
-                String key = (awsState != null) ? awsState.toLowerCase() : "not_found";
-                status = CLOUD_STATUS.getOrDefault(key, IContainerInfo.IStatus.UNKNOWN);
-            }*/
 
             IContainerInfo.IStatus status = statusFromS3(meta);
             if (status == null) {
@@ -442,11 +473,6 @@ public class Cloud implements IScheduler {
                     .containers(List.of(container))
                     .build();
 
-            /*return IJobInfo.builder()
-                    .name(meta.jobName())
-                    .id(meta.jobId())
-                    .clusters(List.of(cluster))
-                    .build();*/
             IJobInfo aux = IJobInfo.builder()
                     .name(meta.jobName())
                     .id(meta.jobId())
@@ -467,224 +493,6 @@ public class Cloud implements IScheduler {
         //throw new UnsupportedOperationException();
         return List.of();
     }
-
-    /*@Override
-    public IClusterInfo createCluster(String job, IClusterRequest request) throws ISchedulerException {
-        System.out.println("AAA: createCluster job=" + job + " instances=" + request.instances());
-
-        IContainerInfo dummy = IContainerInfo.builder()
-                .id("dummy-0")
-                .node("dummy")
-                .image("dummy")
-                .args(List.of())
-                .cpus(1)
-                .gpu(null)
-                .memory(1024L)
-                .time(null)
-                .user(null)
-                .writable(true)
-                .tmpdir(true)
-                .ports(List.of())
-                .binds(List.of())
-                .nodelist(List.of())
-                .hostnames(Map.of())
-                .env(Map.of())
-                .network(IContainerInfo.INetworkMode.HOST)
-                .status(IContainerInfo.IStatus.ACCEPTED)
-                .provider(IContainerInfo.IProvider.DOCKER)
-                .schedulerOptArgs(Map.of())
-                .build();
-
-        return IClusterInfo.builder()
-                .id("cluster-dummy")
-                .instances(1)
-                .containers(List.of(dummy))
-                .build();
-    }*/
-
-
-    //############################## BACKUP DE CREATE CLUSTSER ##############################33
-    /*
-        @Override
-    public IClusterInfo createCluster(String job, IClusterRequest request) throws ISchedulerException {
-        LOGGER.info("createCluster job {} instances={}", job, request.instances());
-
-        String image = request.resources().image();
-        int instances = request.instances();
-        var containerIds = new ArrayList<String>();
-
-        for (int i = 0; i < instances; i++) {
-            String containerName = job + "-executor-" + i;
-            try{
-                List<String> cmd = new ArrayList<>();
-                cmd.add(dockerBin);
-                cmd.add("run");
-                cmd.add("-d");
-                //cmd.add("--rm"); -> Comentado Temporalmente
-                cmd.add("--network"); cmd.add("host");
-                //cmd.add("-p"); cmd.add("1963:1963");
-                cmd.add("--name"); cmd.add(containerName);
-
-                for(var entry : request.resources().env().entrySet()) {
-                    String value = entry.getValue();
-                    if(value != null) {
-                        value = value.trim();
-                    }
-                    cmd.add("-e");  cmd.add(entry.getKey() + "=" + value);
-                }
-
-                cmd.add("-e"); cmd.add("IGNIS_SCHEDULER_ENV_JOB=" + job);
-                cmd.add("-e"); cmd.add("IGNIS_SCHEDULER_ENV_CONTAINER=" + containerName);
-                cmd.add("-e"); cmd.add("IGNIS_JOB_ID=" + job);
-                cmd.add("-e"); cmd.add("IGNIS_JOB_CONTAINER_DIR=/opt/ignis/jobs");
-                cmd.add("-e"); cmd.add("IGNIS_JOB_DIR=/opt/ignis/jobs/" + job);
-                cmd.add("-v"); cmd.add("/ignis/dfs:/ignis/dfs");
-                cmd.add("-v"); cmd.add("/var/run/docker.sock:/var/run/docker.sock");
-                cmd.add("-v"); cmd.add("/opt/ignis/jobs/" + job + ":/opt/ignis/jobs/" + job);
-                cmd.add(image);
-                //cmd.add("ignis-executor");
-
-                //List<String> executorArgs = request.resources().args();
-                //if(executorArgs != null && !executorArgs.isEmpty()) {
-                  //  cmd.addAll(executorArgs);
-                //} else {
-                    //cmd.add("ignis-run");
-                //}
-
-                List<String> executorArgs = new ArrayList<>();
-                executorArgs.add("ignis-logger");
-                if(request.resources().args() != null && !request.resources().args().isEmpty()) {
-                    executorArgs.addAll(request.resources().args());
-                } else{
-                    executorArgs.add("ignis-run");
-                }
-                cmd.addAll(executorArgs);
-
-                ProcessBuilder pb = new ProcessBuilder(cmd);
-                pb.redirectErrorStream(true);
-                Process p = pb.start();
-                int rc = p.waitFor();
-                if (rc != 0) {
-                    String out = new String(p.getInputStream().readAllBytes());
-                    throw new ISchedulerException("docker run failed for executor " + i + ": " + out);
-                }
-                containerIds.add(containerName);
-
-                String publicKey = request.resources().env().get("IGNIS_CRYPTO_PUBLIC");
-                if(publicKey != null) {
-                    publicKey = publicKey.trim();
-
-                    ProcessBuilder mkdirPb = new ProcessBuilder(dockerBin, "exec", containerName,
-                            "bash", "-c",
-                            "mkdir -p /root/.ssh && chmod 700 /root/.ssh && echo '" + publicKey + "' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
-                    );
-
-                    mkdirPb.redirectErrorStream(true);
-                    Process mkdirP = mkdirPb.start();
-                    mkdirP.waitFor();
-                }
-
-                # AQUI
-                Thread.sleep(5000);
-
-                ProcessBuilder logPb1 = new ProcessBuilder(dockerBin, "logs", containerName);
-                logPb1.redirectErrorStream(true);
-                Process logP1 = logPb1.start();
-                System.out.println("S===== EXECUTOR LOG =====");
-                System.out.println(new String(logP1.getInputStream().readAllBytes()));
-                System.out.println("===== END EXECUTOR LOGS =====");
-
-// Ver exit code
-                ProcessBuilder inspectPb = new ProcessBuilder(dockerBin, "inspect",
-                        "--format", "{{.State.ExitCode}} {{.State.Error}}", containerName);
-                inspectPb.redirectErrorStream(true);
-                Process inspectP = inspectPb.start();
-                System.out.println("EXIT CODE: " + new String(inspectP.getInputStream().readAllBytes()));
-
-                ProcessBuilder debugPb = new ProcessBuilder(dockerBin, "exec", containerName,
-                        "cat", "/root/.ssh/authorized_keys");
-                debugPb.redirectErrorStream(true);
-                Process debugP = debugPb.start();
-                System.out.println("AUTHORIZED_KEYS: " + new String(debugP.getInputStream().readAllBytes()));
-
-                // ###############################################################################3
-                // Capturar logs del executor para debug
-                ProcessBuilder logPb = new ProcessBuilder(dockerBin, "logs", containerName);
-                logPb.redirectErrorStream(true);
-                Process logP = logPb.start();
-                String logs = new String(logP.getInputStream().readAllBytes());
-                System.out.println("===== EXECUTOR LOGS ("+ containerName +") =====");
-                System.out.println(logs);
-                System.out.println("===== END EXECUTOR LOGS ("+ containerName +") =====");
-                // ###############################################################################3
-
-                // Ver si el contenedor sigue vivo
-                ProcessBuilder psPb = new ProcessBuilder(dockerBin, "ps", "-a", "--filter", "name=" + containerName, "--format", "{{.Names}} {{.Status}}");
-                psPb.redirectErrorStream(true);
-                Process psP = psPb.start();
-                System.out.println("ESTADO EXECUTOR: " + new String(psP.getInputStream().readAllBytes()));
-
-            } catch (Exception e){
-                throw new ISchedulerException("Error launching executor container " + i + ": " + e.getMessage(), e);
-            }
-        }
-
-        // Esperar a que el executor esté listo en el puerto 1963
-        int maxWait = 30;
-        boolean ready = false;
-        for(int attempt = 0; attempt < maxWait; attempt++) {
-            try(var socket = new Socket("localhost", 1963)){
-                ready = true;
-                break;
-            } catch (Exception e) {
-                try{
-                    Thread.sleep(1000);
-                } catch (InterruptedException e1) {
-                    throw new ISchedulerException("Failed to sleep after " + attempt + "s", e1);
-                }
-
-            }
-        }
-
-        if (!ready) {
-            throw new ISchedulerException("Executor never became ready on port 1963");
-        }
-
-        var containers = new ArrayList<IContainerInfo>();
-        for (int i = 0; i < containerIds.size(); i++) {
-            containers.add(IContainerInfo.builder()
-                    .id(containerIds.get(i))
-                    .node("localhost")
-                    .image(image)
-                    .args(request.resources().args() != null ? request.resources().args() : List.of())
-                    .cpus(request.resources().cpus())
-                    .gpu(request.resources().gpu())
-                    .memory(request.resources().memory())
-                    .writable(true)
-                    .tmpdir(true)
-                    .ports(request.resources().ports())
-                    .binds(List.of())
-                    .nodelist(List.of())
-                    .hostnames(Map.of())
-                    .env(Map.of(
-                            "IGNIS_SCHEDULER_ENV_JOB", job,
-                            "IGNIS_SCHEDULER_ENV_CONTAINER", containerIds.get(i)
-                    ))
-                    .network(IContainerInfo.INetworkMode.BRIDGE)
-                    .status(IContainerInfo.IStatus.RUNNING)
-                    .provider(IContainerInfo.IProvider.DOCKER)
-                    .schedulerOptArgs(Map.of())
-                    .build());
-            // .ports(List.of(new IPortMapping(1963, 1963, IPortMapping.Protocol.TCP)))
-        }
-
-        return IClusterInfo.builder()
-                .id(request.name())
-                .instances(instances)
-                .containers(containers)
-                .build();
-    }
-     */
 
     @Override
     public IClusterInfo createCluster(String job, IClusterRequest request) throws ISchedulerException {

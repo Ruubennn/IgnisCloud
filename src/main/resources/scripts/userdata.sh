@@ -71,6 +71,57 @@ docker pull "$IMAGE"
 START_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
 
 # ── Función de limpieza y finalización ──────────────────────────────────────
+#cleanup_and_finish() {
+#  local rc=$1
+#  set +e
+
+#  END_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+#  local state="FAILED"
+#  [ "$rc" -eq 0 ] && state="FINISHED"
+
+#  echo "[user-data] job finished with rc=$rc state=$state"
+
+  # subir el log de ejecución
+#  if [ -f /tmp/out.txt ]; then
+#    aws --region "$REGION" s3 cp /tmp/out.txt \
+#      "s3://$BUCKET/jobs/$JOB_ID/out.txt" || true
+#  fi
+
+
+# subir resuletados del job a /results
+#  if [ -d "/ignis/dfs/output" ]; then
+#    aws --region "$REGION" s3 sync "/ignis/dfs/output" \
+#      "s3://$BUCKET/jobs/$JOB_ID/results/" || true
+#  fi
+
+#  aws --region "$REGION" s3 sync "/ignis/dfs/payload/" \
+#    "s3://$BUCKET/jobs/$JOB_ID/" \
+#    --exclude "*.py" --quiet || true
+
+#  echo "[user-data] looking for wordcount results..."
+#  find /ignis /opt/ignis/jobs/$JOB_ID -name "wordcount*" 2>/dev/null || echo "[user-data] no wordcount files found"
+
+#  if [ -f "/ignis/dfs/payload/wordcount.txt" ]; then
+#      echo "[user-data] found wordcount in payload"
+#      aws --region "$REGION" s3 cp "/ignis/dfs/payload/wordcount.txt" \
+#        "s3://$BUCKET/jobs/$JOB_ID/results/wordcount.txt" || true
+#  fi
+
+#  aws --region "$REGION" s3 sync "/opt/ignis/jobs/$JOB_ID/" \
+#    "s3://$BUCKET/jobs/$JOB_ID/results/" --quiet || true
+
+#  printf '{"state":"%s","rc":%s,"start":"%s","end":"%s"}\n' \
+#    "$state" "$rc" "$START_TS" "$END_TS" > /tmp/status.json
+
+#  aws --region "$REGION" s3 cp /tmp/status.json \
+#    "s3://$BUCKET/jobs/$JOB_ID/status.json" || true
+
+#  echo "[user-data] shutting down instance"
+#  shutdown -h now
+
+#  exit "$rc"
+#}
+
 cleanup_and_finish() {
   local rc=$1
   set +e
@@ -81,32 +132,30 @@ cleanup_and_finish() {
 
   echo "[user-data] job finished with rc=$rc state=$state"
 
+  # Subir log de ejecución
   if [ -f /tmp/out.txt ]; then
     aws --region "$REGION" s3 cp /tmp/out.txt \
       "s3://$BUCKET/jobs/$JOB_ID/out.txt" || true
   fi
 
+  # Subir resultados del job a results/
   if [ -d "/ignis/dfs/output" ]; then
     aws --region "$REGION" s3 sync "/ignis/dfs/output" \
-      "s3://$BUCKET/jobs/$JOB_ID/results/" || true
+      "s3://$BUCKET/jobs/$JOB_ID/results/" --quiet || true
   fi
 
-  aws --region "$REGION" s3 sync "/ignis/dfs/payload/" \
-    "s3://$BUCKET/jobs/$JOB_ID/" \
-    --exclude "*.py" --quiet || true
+  #aws --region "$REGION" s3 sync "/ignis/dfs/payload/" \
+  #  "s3://$BUCKET/jobs/$JOB_ID/results/" \
+  #  --exclude "*.py" --quiet || true
 
-  echo "[user-data] looking for wordcount results..."
-  find /ignis /opt/ignis/jobs/$JOB_ID -name "wordcount*" 2>/dev/null || echo "[user-data] no wordcount files found"
+  # Solo subir directorios del payload (resultados de saveAsTextFile)
+  find /ignis/dfs/payload/ -mindepth 1 -maxdepth 1 -type d | while read dir; do
+    dirname=$(basename "$dir")
+    aws --region "$REGION" s3 sync "$dir/" \
+      "s3://$BUCKET/jobs/$JOB_ID/results/$dirname/" --quiet || true
+  done
 
-  if [ -f "/ignis/dfs/payload/wordcount.txt" ]; then
-      echo "[user-data] found wordcount in payload"
-      aws --region "$REGION" s3 cp "/ignis/dfs/payload/wordcount.txt" \
-        "s3://$BUCKET/jobs/$JOB_ID/results/wordcount.txt" || true
-  fi
-
-  aws --region "$REGION" s3 sync "/opt/ignis/jobs/$JOB_ID/" \
-    "s3://$BUCKET/jobs/$JOB_ID/results/" --quiet || true
-
+  # Subir estado del job
   printf '{"state":"%s","rc":%s,"start":"%s","end":"%s"}\n' \
     "$state" "$rc" "$START_TS" "$END_TS" > /tmp/status.json
 
