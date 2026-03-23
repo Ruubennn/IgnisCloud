@@ -1,14 +1,11 @@
 package org.ignis.scheduler;
 
-import org.slf4j.LoggerFactory;
-
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
 public class UserDataBuilder {
-    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(UserDataBuilder.class);
 
     private static final String TEMPLATE_RESOURCE_PATH = "scripts/userdata.sh";
 
@@ -45,6 +42,7 @@ public class UserDataBuilder {
     }
 
     private static String shellEscapeSingleQuotes(String s) {
+        if (s == null) return "";
         return s.replace("'", "'\"'\"'");
     }
 }

@@ -18,22 +18,32 @@ public class TerraformManager {
 
     private static final String TF_BIN_PROP = "ignis.terraform.bin";
     private static final String TF_RESOURCE_DIR = "terraform";
-    private static boolean CLEANUP_WORKDIR = true;
 
     private final String terraformBinary;
     private final Map<String, String> outputs = new HashMap<>();
     private Path workDir = null;
-    private String region;
+    private final String region;
 
     public TerraformManager(String region) {
         this.terraformBinary = System.getProperty(TF_BIN_PROP, "terraform");
         this.region = region;
     }
 
+    // Provision Terraform infrastructure if not exists
+    public synchronized void ensureInfrastructure() throws ISchedulerException {
+
+        boolean runtime = Boolean.parseBoolean(System.getenv("IGNIS_CLOUD_RUNTIME"));
+        if (runtime) {
+            LOGGER.info("Cloud runtime mode detected: skipping infrastructure provisioning");
+            return;
+        }
+        provision();
+    }
+
     public void provision() throws ISchedulerException {
         if(this.workDir != null) {
             LOGGER.warn("WorkDir already exists");
-            throw new IllegalStateException("TerraformManager already provisioned");
+            throw new ISchedulerException("TerraformManager already provisioned");
         }
 
         try {
@@ -53,25 +63,14 @@ public class TerraformManager {
             if (workDir != null && Files.exists(workDir)) {
                 try {
                     deleteDirectoryRecursively(workDir);
-                    LOGGER.info("Limpieza de directorio parcial tras fallo");
+                    LOGGER.info("Cleaning up partial directory after failure");
                 } catch (Exception ex) {
-                    LOGGER.warn("No se pudo limpiar directorio tras error", ex);
+                    LOGGER.warn("Could not clean up directory after error", ex);
                 }
             }
             workDir = null;
-            throw new ISchedulerException("Fallo durante terraform provision", e);
+            throw new ISchedulerException("Failure during terraform provision", e);
         }
-    }
-
-    public Map<String, String> getOutputs() throws ISchedulerException {
-        if (outputs.isEmpty()) {
-            throw new ISchedulerException("No outputs available");
-        }
-        return Collections.unmodifiableMap(outputs);
-    }
-
-    public String getOutput(String key, String defaultValue) {
-        return outputs.getOrDefault(key, defaultValue);
     }
 
     public String requireOutput(String key) throws ISchedulerException {
@@ -190,7 +189,7 @@ public class TerraformManager {
 
             String json = jsonOutput.toString().trim();
             if(json.isEmpty()) {
-                throw new ISchedulerException("Terraform output was not captured: " + json);
+                throw new ISchedulerException("Terraform output is empty");
             }
 
             var root = parseJson(json);
@@ -211,7 +210,7 @@ public class TerraformManager {
     private String getOutputValue(JsonNode root, String outputName) {
         JsonNode node = root.path(outputName).path("value");
         if (node.isMissingNode() || node.isNull()) {
-            LOGGER.warn("Output '{}' no encontrado o nulo", outputName);
+            LOGGER.warn("Output '{}' not found or null", outputName);
             return null;
         }
         return node.asText();
@@ -270,6 +269,5 @@ public class TerraformManager {
         } catch (Exception e){
             LOGGER.error("Failed to cleanup Terraform", e);
         }
-
     }
 }

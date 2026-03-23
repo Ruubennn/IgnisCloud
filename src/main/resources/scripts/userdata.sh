@@ -201,6 +201,7 @@ docker run --rm \
   -e IGNIS_HOME=/opt/ignis \
   -e IGNIS_JOB_SOCKETS="/opt/ignis/jobs/$JOB_ID/sockets" \
   -e IGNIS_WDIR="/ignis/dfs/payload" \
+  -e IGNIS_JOBS_BUCKET="$BUCKET" \
   -v /ignis/dfs:/ignis/dfs \
   -v /var/tmp/ignis-cloud:/var/tmp/ignis-cloud \
   -v /var/run/docker.sock:/var/run/docker.sock \

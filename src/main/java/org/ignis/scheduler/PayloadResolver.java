@@ -2,6 +2,7 @@ package org.ignis.scheduler;
 
 import org.ignis.scheduler.model.IBindMount;
 import org.ignis.scheduler.model.IClusterRequest;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,7 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class PayloadResolver {
-
+    private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(PayloadResolver.class);
     private static final String CLOUD_PAYLOAD_DIR = "/ignis/dfs/payload";
 
     // Reference: [38], [39]
@@ -18,12 +19,12 @@ public class PayloadResolver {
         if(args == null || args.isEmpty()) return null;
         for(String a: args){
             if(a == null) continue;
-
             Path path = Paths.get(a);
             if(Files.exists(path) && Files.isRegularFile(path)){
                 return path.toAbsolutePath().normalize();
             }
         }
+        LOGGER.debug("No main script detected in args {}", args);
         return null;
     }
 
@@ -33,28 +34,20 @@ public class PayloadResolver {
             return List.of();
         }
 
-        // ── CAMBIO IMPORTANTE ────────────────────────────────
         Path scriptDir = script.getParent();                    // ← directorio padre
         if (scriptDir == null || !Files.isDirectory(scriptDir)) {
             // fallback: solo el script (caso raro)
+            LOGGER.warn("Script directory not found, falling back to single file upload");
             String cloudTarget = CLOUD_PAYLOAD_DIR + "/" + script.getFileName();
             return List.of(new IBindMount(cloudTarget, script.toString(), true));
         }
 
-        // Subimos TODO el directorio donde está el script
+        // Subimos todo el directorio donde está el script
         // → /ignis/dfs/payload/ contendrá test.py, text.txt, test_2mb.txt, etc.
         return List.of(
                 new IBindMount(CLOUD_PAYLOAD_DIR, scriptDir.toAbsolutePath().toString(), true)
         );
     }
-
-    /*public List<IBindMount> buildPayloadBindsFromArgs(IClusterRequest driver){
-        Path script = detectMainScript(driver.resources().args());
-        if(script == null) return List.of();
-
-        String cloudTarget = CLOUD_PAYLOAD_DIR + "/" + script.getFileName();
-        return List.of(new IBindMount(cloudTarget, script.toString(), true));
-    }*/
 
     public String resolveCloudScriptPath(IClusterRequest driver) {
         Path script = detectMainScript(driver.resources().args());
@@ -73,7 +66,7 @@ public class PayloadResolver {
 
         int startIndex = 0;
         if ("ignis-job".equals(args.get(0))) {
-            startIndex = 1; // TODO: con el prueba.sh para que IMAGE_CMD = python3 /ignis/dfs/payload/test.py es 2
+            startIndex = 1;
         }
 
         List<String> command = new ArrayList<>();
@@ -97,16 +90,5 @@ public class PayloadResolver {
         }
 
         return String.join(" ", command);
-    }
-
-    public String resolveImage(IClusterRequest driver) {
-        String image = driver.resources().image();
-        if(image == null || image.contains("ignishpc/ignishpc")){
-            List<String> args = driver.resources().args();
-            if(args.size() > 1 && args.get(1).contains("/")){
-                image = args.get(1);
-            }
-        }
-        return image;
     }
 }

@@ -1,63 +1,32 @@
 package org.ignis.scheduler;
 
 import org.slf4j.LoggerFactory;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
-import software.amazon.awssdk.services.ecr.EcrClient;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.ssm.SsmClient;
-
-import java.net.URI;
 
 public class AwsFactory {
 
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(AwsFactory.class);
-    private static final String LOCALSTACK_ENDPOINT = "http://localhost:4566";
 
     private final Region region;
-    private final boolean isLocalStackMode;
-    private final URI localStackUri;
 
-    public AwsFactory(boolean isLocalStackMode, Region region) {
-        this.isLocalStackMode = isLocalStackMode;
-        if (isLocalStackMode) {
-            try {
-                this.localStackUri = URI.create(LOCALSTACK_ENDPOINT);
-                LOGGER.info("Using local stack endpoint {}", this.localStackUri);
-            }catch (Exception e) {
-                throw new IllegalStateException("Local stack endpoint not found", e);
-            }
-        } else {
-            this.localStackUri = null;
-            LOGGER.info("Using AWS");
-        }
+    public AwsFactory(Region region) {
         this.region = region;
-    }
-
-    public boolean isLocalStackMode() {
-        return isLocalStackMode;
+        LOGGER.info("Initializing AWS factory for region {}", region);
     }
 
     public Region getRegion() {
         return region;
+
     }
 
     // Reference: [20], [21]
     public Ec2Client createEc2Client() {
-        var builder = Ec2Client.builder(); //.region(getRegion());
-
+        var builder = Ec2Client.builder();
         if(getRegion() != null) {
             builder.region(getRegion());
-        }
-
-        if (isLocalStackMode()) {
-            if(getRegion() == null) builder.region(Region.US_EAST_1);
-            builder.endpointOverride(localStackUri)
-                    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")));
-
         }
         return builder.build();
     }
@@ -68,32 +37,6 @@ public class AwsFactory {
         if(getRegion() != null) {
             builder.region(getRegion());
         }
-        if (isLocalStackMode()) {
-            if(getRegion() == null) builder.region(Region.US_EAST_1);
-            builder
-                    .endpointOverride(localStackUri)
-                    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")))
-                    .serviceConfiguration(
-                            S3Configuration.builder()
-                                    .pathStyleAccessEnabled(true)
-                                    .chunkedEncodingEnabled(false)
-                                    .build());
-        }
-        return builder.build();
-    }
-
-    public EcrClient createECRClient(){
-        var builder = EcrClient.builder();
-        if(getRegion() != null) {
-            builder.region(getRegion());
-        }
-        if (isLocalStackMode()) {
-            if(getRegion() == null) builder.region(Region.US_EAST_1);
-            builder
-                    .endpointOverride(localStackUri)
-                    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")));
-
-        }
         return builder.build();
     }
 
@@ -101,12 +44,6 @@ public class AwsFactory {
         var builder =  SsmClient.builder();
         if(getRegion() != null) {
             builder.region(getRegion());
-        }
-        if (isLocalStackMode()) {
-            if(getRegion() == null) builder.region(Region.US_EAST_1);
-            builder
-                    .endpointOverride(localStackUri)
-                    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test")));
         }
         return builder.build();
     }

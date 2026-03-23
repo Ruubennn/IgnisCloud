@@ -1,5 +1,6 @@
 package org.ignis.scheduler;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.core.ResponseBytes;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -15,6 +16,7 @@ import java.util.List;
 
 public class S3Operations {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(S3Operations.class);
+    private final ObjectMapper mapper = new ObjectMapper();
 
     private static final String JOBS_PREFIX = "jobs/";
     private static final String DEFAULT_BUNDLE_FILENAME = "bundle.tar.gz";
@@ -25,77 +27,32 @@ public class S3Operations {
         this.awsFactory = awsFactory;
     }
 
-    public String uploadJobBundle(String bucket, String jobId, byte[] bundleData) throws ISchedulerException {
-        return uploadFile(bucket, jobId, DEFAULT_BUNDLE_FILENAME, bundleData);
-    }
-
-    // Reference: [27]
-    public String uploadFile(String bucket, String jobId, String fileName, byte[] data) throws ISchedulerException {
-        validateUploadParams(bucket, jobId, fileName, data);
-        String key = buildKey(jobId, fileName);
-        S3Client s3Client = awsFactory.createS3Client();
-        try{
+    private String uploadToS3(String bucket, String key, RequestBody body) throws ISchedulerException {
+        try (S3Client s3 = awsFactory.createS3Client()) {
             PutObjectRequest put = PutObjectRequest.builder()
                     .bucket(bucket)
                     .key(key)
                     .build();
-
-            s3Client.putObject(put, RequestBody.fromBytes(data));
-            LOGGER.info("File uploaded to S3: {}", key);
+            s3.putObject(put, body);
+            LOGGER.info("Uploaded to S3: {}", key);
             return key;
-        }catch (Exception e){
-            LOGGER.error("Failed to upload To S3", e);
-            throw new ISchedulerException("Failed to upload To S3", e);
+        } catch (Exception e) {
+            throw new ISchedulerException("Failed to upload to S3: " + key, e);
         }
     }
 
-    // TODO: unificar uploadFile + uploadLargeFile (Solo cambia el RequestBody
-    /*public String uploadFile(String bucket, String jobId, String fileName, byte[] data, Path localPathIfLarge) throws ISchedulerException {
-        String key = buildKey(jobId, fileName);
-        S3Client s3 = awsFactory.createS3Client();
+    public String uploadJobBundle(String bucket, String jobId, byte[] bundleData) throws ISchedulerException {
+        validateUploadParams(bucket, jobId, DEFAULT_BUNDLE_FILENAME, bundleData);
+        String key = buildKey(jobId, DEFAULT_BUNDLE_FILENAME);
+        return uploadToS3(bucket, key, RequestBody.fromBytes(bundleData));
+    }
 
-        PutObjectRequest request = PutObjectRequest.builder()
-                .bucket(bucket)
-                .key(key)
-                .build();
-
-        RequestBody body;
-        if (localPathIfLarge != null && Files.exists(localPathIfLarge)) {
-            body = RequestBody.fromFile(localPathIfLarge);  // streaming
-            LOGGER.debug("Uploading large file via stream: {}", key);
-        } else if (data != null) {
-            body = RequestBody.fromBytes(data);
-            LOGGER.debug("Uploading small data: {}", key);
-        } else {
-            throw new IllegalArgumentException("No data or path provided");
-        }
-
-        s3.putObject(request, body);
-        return key;
-    }*/
-
-    // Reference: [27] + streaming para ficheros grandes
     public String uploadLargeFile(String bucket, String jobId, String relativePath, Path localPath) throws ISchedulerException {
         if (!Files.exists(localPath) || !Files.isRegularFile(localPath)) {
             throw new IllegalArgumentException("Large file does not exist: " + localPath);
         }
-
         String key = JOBS_PREFIX + jobId + "/payload/large/" + stripLeadingSlash(relativePath);
-        S3Client s3Client = awsFactory.createS3Client();
-
-        try {
-            PutObjectRequest put = PutObjectRequest.builder()
-                    .bucket(bucket)
-                    .key(key)
-                    .build();
-
-            s3Client.putObject(put, RequestBody.fromFile(localPath)); // ¡streaming! No carga en memoria
-            LOGGER.info("Large file uploaded directly to S3: {}", key);
-            return key;
-        } catch (Exception e) {
-            LOGGER.error("Failed to upload large file", e);
-            throw new ISchedulerException("Failed to upload large file to S3", e);
-        }
+        return uploadToS3(bucket, key, RequestBody.fromFile(localPath));
     }
 
     private String stripLeadingSlash(String p) {
@@ -122,7 +79,6 @@ public class S3Operations {
         return JOBS_PREFIX + jobId + "/" + cleanFileName;
     }
 
-
     // Reference: [41]
     private List<S3Object> listObjectsInBucket(String bucket, String prefix) throws ISchedulerException {
         if(bucket == null || bucket.trim().isEmpty()) {
@@ -137,11 +93,10 @@ public class S3Operations {
             effectivePrefix = effectivePrefix.substring(0, effectivePrefix.length() - 1);
         }
 
-        S3Client s3 = this.awsFactory.createS3Client();
+        try(S3Client s3 = this.awsFactory.createS3Client()){
         String nextContinuationToken = null;
         List<S3Object> contents = new ArrayList<>();
 
-        try{
             do{
                 ListObjectsV2Request.Builder requestBuilder = ListObjectsV2Request.builder()
                         .bucket(bucket)
@@ -161,7 +116,7 @@ public class S3Operations {
                 nextContinuationToken = response.nextContinuationToken();
 
             }while(nextContinuationToken != null);
-            LOGGER.info("Listing S3 Objects: {}", contents);
+            LOGGER.debug("Listing S3 Objects: {}", contents);
 
             return contents;
         }catch (NoSuchBucketException e) {
@@ -228,41 +183,9 @@ public class S3Operations {
            }
         }
        }
-       LOGGER.info("Download S3 Objects: {}", objects);
+       LOGGER.debug("Download S3 Objects: {}", objects);
        return succesCount;
     }
-
-   /* public void downloadJob(String jobId, String bucket) throws ISchedulerException {
-        if (jobId == null || jobId.trim().isEmpty()) {
-            throw new IllegalArgumentException("jobId should not be empty");
-        }
-
-        String prefix = "jobs/" + jobId.trim() + "/results/";
-        String configuredDir = System.getenv("IGNIS_DOWNLOAD_DIR");
-
-        String baseDir;
-        if (configuredDir != null && !configuredDir.trim().isEmpty()) {
-            baseDir = configuredDir.trim();
-            LOGGER.debug("Using directory configured as environment variable: {}", baseDir);
-        } else {
-            baseDir = Paths.get("").toAbsolutePath().toString();
-            LOGGER.debug("IGNIS_DOWNLOAD_DIR not found. Using directory: {}", baseDir);
-        }
-
-        String localDir = Paths.get(baseDir, "ignis-downloads", jobId).toString();
-
-        try {
-            Files.createDirectories(Paths.get(localDir));
-            LOGGER.info("Downloading job {} → target: {}", jobId, localDir);
-            int count = downloadObjects(bucket, prefix, localDir);
-            LOGGER.info("Download completed: {} objects in {}", count, localDir);
-
-        } catch (IOException e) {
-            throw new ISchedulerException("The download directory could not be created: " + localDir, e);
-        } catch (Exception e) {
-            throw new ISchedulerException("Failure downloading objects at job " + jobId, e);
-        }
-    }*/
 
     public void downloadJob(String jobId, String bucket) throws ISchedulerException {
         if (jobId == null || jobId.trim().isEmpty()) {
@@ -293,53 +216,19 @@ public class S3Operations {
         }
     }
 
-
-    public void deleteJobObjects(String bucket, String jobId) throws ISchedulerException {
-        if (jobId == null || jobId.trim().isEmpty()) {
-            throw new IllegalArgumentException("jobId cannot be empty");
-        }
-
-        String prefix = JOBS_PREFIX + jobId.trim() + "/";
-
-        List<S3Object> objects = listObjectsInBucket(bucket, prefix);
-        if (objects.isEmpty()) {
-            LOGGER.info("No objects found to delete for job {}", jobId);
-            return;
-        }
-
-        S3Client s3 = awsFactory.createS3Client();
-
-        DeleteObjectsRequest.Builder deleteBuilder = DeleteObjectsRequest.builder()
-                .bucket(bucket);
-
-        List<ObjectIdentifier> toDelete = objects.stream()
-                .map(obj -> ObjectIdentifier.builder().key(obj.key()).build())
-                .toList();
-
-        if (!toDelete.isEmpty()) {
-            deleteBuilder.delete(Delete.builder().objects(toDelete).build());
-
-            try {
-                s3.deleteObjects(deleteBuilder.build());
-                LOGGER.info("Deleted {} objects for job {} in bucket {}",
-                        toDelete.size(), jobId, bucket);
-            } catch (Exception e) {
-                LOGGER.error("Failed to delete objects for job {}", jobId, e);
-                throw new ISchedulerException("Failed to delete job objects from S3", e);
-            }
-        }
-    }
-
     public void putString(String bucket, String key, String content, String contentType) throws ISchedulerException {
-        S3Client s3 = awsFactory.createS3Client();
-        s3.putObject(
-                PutObjectRequest.builder()
-                        .bucket(bucket)
-                        .key(key)
-                        .contentType(contentType)
-                        .build(),
-                RequestBody.fromString(content)
-        );
+        try(S3Client s3 = awsFactory.createS3Client()) {
+            s3.putObject(
+                    PutObjectRequest.builder()
+                            .bucket(bucket)
+                            .key(key)
+                            .contentType(contentType)
+                            .build(),
+                    RequestBody.fromString(content)
+            );
+        }catch (Exception e){
+            throw new ISchedulerException("Failed to write s3://" + bucket + "/" + key, e);
+        }
     }
 
     public String getString(String bucket, String key) throws ISchedulerException {
@@ -357,4 +246,28 @@ public class S3Operations {
 
     }
 
+    public void saveJobMetaToS3(JobMeta meta) throws ISchedulerException {
+        try{
+            String json = mapper.writeValueAsString(meta);
+            putString(meta.bucket(), jobMetaKey(meta.jobId()), json, "application/json");
+        } catch (Exception e){
+            throw new ISchedulerException("Failed to upload job meta to S3 for job " + meta.jobId(), e);
+        }
+    }
+
+    private String jobMetaKey(String jobId){
+        return "jobs/" + jobId + "/job-meta.json";
+    }
+
+    public JobMeta loadJobMetaFromS3(String jobId, String bucket) {
+        try {
+            String key = jobMetaKey(jobId);
+            String json = getString(bucket, key);
+            if (json == null || json.isBlank()) return null;
+            return mapper.readValue(json, JobMeta.class);
+        } catch (Exception e) {
+            LOGGER.warn("Could not load job meta from S3 for job {}", jobId, e);
+            return null;
+        }
+    }
 }
