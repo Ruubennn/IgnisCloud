@@ -270,4 +270,39 @@ public class S3Operations {
             return null;
         }
     }
+
+    public void emptyBucket(String bucket) throws ISchedulerException {
+        LOGGER.info("Emptying bucket {}", bucket);
+        try (S3Client s3 = awsFactory.createS3Client()) {
+            String continuationToken = null;
+            do {
+                ListObjectsV2Request.Builder requestBuilder = ListObjectsV2Request.builder()
+                        .bucket(bucket);
+                if (continuationToken != null) {
+                    requestBuilder.continuationToken(continuationToken);
+                }
+
+                ListObjectsV2Response response = s3.listObjectsV2(requestBuilder.build());
+
+                List<ObjectIdentifier> objectsToDelete = response.contents().stream()
+                        .map(obj -> ObjectIdentifier.builder().key(obj.key()).build())
+                        .toList();
+
+                if (!objectsToDelete.isEmpty()) {
+                    s3.deleteObjects(DeleteObjectsRequest.builder()
+                            .bucket(bucket)
+                            .delete(Delete.builder().objects(objectsToDelete).build())
+                            .build());
+                    LOGGER.debug("Deleted {} objects from bucket {}", objectsToDelete.size(), bucket);
+                }
+
+                continuationToken = response.isTruncated() ? response.nextContinuationToken() : null;
+
+            } while (continuationToken != null);
+
+            LOGGER.info("Bucket {} emptied successfully", bucket);
+        } catch (Exception e) {
+            throw new ISchedulerException("Failed to empty bucket " + bucket, e);
+        }
+    }
 }

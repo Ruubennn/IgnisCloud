@@ -305,16 +305,39 @@ public class Cloud implements IScheduler {
                     LOGGER.warn("Failed to download results for job {}", jobId, e);
                     System.out.println("[ignis-cloud] Warning: could not download results. Available at: s3://" + bucket + "/jobs/" + jobId + "/results/");
                 }
+
+                try {
+                    System.out.println("[ignis-cloud] Cleaning up infrastructure...");
+                    s3.emptyBucket(bucket);
+                    terraformManager.destroy();
+                    System.out.println("[ignis-cloud] Infrastructure cleaned up.");
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to destroy infrastructure for job {}", jobId, e);
+                    System.out.println("[ignis-cloud] Warning: could not clean up infrastructure automatically.");
+                }
+
                 break;
 
             } else if (status == IContainerInfo.IStatus.ERROR || status == IContainerInfo.IStatus.DESTROYED) {
                 System.out.println("\n[ignis-cloud] Job failed with status: " + status);
                 LOGGER.error("Job {} failed with status {}", jobId, status);
+                try {
+                    s3.emptyBucket(bucket);
+                    terraformManager.destroy();
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to destroy infrastructure after job failure", e);
+                }
                 break;
             }
             // TIMEOUT CHECK
             if (System.currentTimeMillis() - start > maxWaitMs) {
                 System.out.println("\n[ignis-cloud] Timeout reached. Results at: s3://" + bucket + "/jobs/" + jobId + "/");
+                try {
+                    s3.emptyBucket(bucket);
+                    terraformManager.destroy();
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to destroy infrastructure after timeout", e);
+                }
                 break;
             }
             try{

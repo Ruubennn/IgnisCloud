@@ -249,7 +249,7 @@ public class TerraformManager {
         }
 
         try{
-            executeTerraform(this.workDir, "destroy", "-auto-approve", "-input=false");
+            executeTerraform(this.workDir, "destroy", "-auto-approve", "-input=false", "-var", "aws_region=" + region);
             LOGGER.info("Destroy completed");
         } catch (Exception e){
             LOGGER.error("Failed to destroy Terraform", e);
