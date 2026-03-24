@@ -1,18 +1,5 @@
 provider "aws" {
-  region                      = var.aws_region
-  //access_key                  = "test"
-  //secret_key                  = "test"
-  //skip_credentials_validation = true
-  //skip_metadata_api_check     = true
-  //skip_requesting_account_id  = true
-
-  //endpoints {
-    //ec2             = "http://localhost:4566"
-    //networkmanager  = "http://localhost:4566"
-    //iam             = "http://localhost:4566"
-    //s3              = "http://s3.localhost.localstack.cloud:4566"
-    //sts             = "http://localhost:4566"
-  //}
+  region = var.aws_region
 }
 
 // VPC
@@ -30,7 +17,7 @@ resource "aws_subnet" "ignis_subnet" {
   vpc_id = aws_vpc.ignis_vpc.id
   cidr_block = "10.0.1.0/24"
   map_public_ip_on_launch = true
-  availability_zone = "us-east-1a" //var.availability_zone
+  availability_zone = var.availability_zone
 
   tags = {
     Name = "ignis_subnet"

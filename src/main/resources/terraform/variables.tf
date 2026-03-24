@@ -6,5 +6,4 @@ variable "aws_region" {
 variable "availability_zone" {
   description = "Availability Zone for the Ignis subnet"
   type        = string
-  default     = "us-east-1a"
 }

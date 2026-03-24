@@ -8,6 +8,7 @@ import software.amazon.awssdk.services.ssm.SsmClient;
 import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 
 public class EC2Operations {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(EC2Operations.class);
@@ -145,5 +146,39 @@ public class EC2Operations {
         } catch (Exception e) {
             throw new ISchedulerException("Failed to resolve AMI via SSM (" + paramName + ")", e);
         }
+    }
+
+    public String resolveAvailabilityZone() throws ISchedulerException {
+        // 1. Env var
+        String configuredAZ = System.getenv("IGNIS_AWS_AZ");
+        if(configuredAZ != null && !configuredAZ.isBlank()) {
+            LOGGER.info("Using AZ from IGNIS_AWS_AZ: {}", configuredAZ);
+            return configuredAZ.trim();
+        }
+
+        // 2. Search available AZs at the region
+        try (Ec2Client ec2 = awsFactory.createEc2Client()) {
+            DescribeAvailabilityZonesRequest request = DescribeAvailabilityZonesRequest.builder()
+                    .filters(Filter.builder()
+                            .name("state")
+                            .values("available")
+                            .build())
+                    .build();
+
+            List<AvailabilityZone> zones = ec2.describeAvailabilityZones(request).availabilityZones();
+            if(!zones.isEmpty()) {
+                String az = zones.get(0).zoneName();
+                LOGGER.info("Auto-resolved AZ for region {}: {}", awsFactory.getRegion(), az);
+                return az;
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Could not auto-resolve AZ from AWS, falling back to default", e);
+        }
+
+        // 3. Fallback
+        String fallback = awsFactory.getRegion().id() + "a";
+        LOGGER.info("Using fallback AZ: {}", fallback);
+        return fallback;
+
     }
 }

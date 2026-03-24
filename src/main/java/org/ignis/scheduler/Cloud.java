@@ -44,8 +44,8 @@ public class Cloud implements IScheduler {
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
         this.awsFactory = new AwsFactory(resolveRegion());
-        this.terraformManager = new TerraformManager(awsFactory.getRegion().id());
         this.ec2 = new EC2Operations(awsFactory);
+        this.terraformManager = new TerraformManager(awsFactory.getRegion().id(), ec2.resolveAvailabilityZone());
         this.s3 = new S3Operations(awsFactory);
         this.userDataBuilder = new UserDataBuilder();
         this.bundleCreator = new BundleCreator();

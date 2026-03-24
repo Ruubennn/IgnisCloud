@@ -23,10 +23,12 @@ public class TerraformManager {
     private final Map<String, String> outputs = new HashMap<>();
     private Path workDir = null;
     private final String region;
+    private final String az;
 
-    public TerraformManager(String region) {
+    public TerraformManager(String region, String az) {
         this.terraformBinary = System.getProperty(TF_BIN_PROP, "terraform");
         this.region = region;
+        this.az = az;
     }
 
     // Provision Terraform infrastructure if not exists
@@ -53,7 +55,9 @@ public class TerraformManager {
             copyTerraformResourcesTo(workDir);
 
             executeTerraform(workDir, "init", "-input=false");
-            executeTerraform(workDir, "apply", "-auto-approve", "-input=false", "-var", "aws_region=" + region);
+            executeTerraform(workDir, "apply", "-auto-approve", "-input=false",
+                    "-var", "aws_region=" + region,
+                    "-var", "availability_zone=" + az);
 
             captureOutputs(workDir);
 
@@ -249,7 +253,9 @@ public class TerraformManager {
         }
 
         try{
-            executeTerraform(this.workDir, "destroy", "-auto-approve", "-input=false", "-var", "aws_region=" + region);
+            executeTerraform(this.workDir, "destroy", "-auto-approve", "-input=false",
+                    "-var", "aws_region=" + region,
+                    "-var", "availability_zone=" + az);
             LOGGER.info("Destroy completed");
         } catch (Exception e){
             LOGGER.error("Failed to destroy Terraform", e);
