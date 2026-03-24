@@ -54,13 +54,18 @@ public class TerraformManager {
 
             copyTerraformResourcesTo(workDir);
 
+            System.out.println("[ignis-cloud] Provisioning infrastructure...");
             executeTerraform(workDir, "init", "-input=false");
+
+            System.out.println("[ignis-cloud] Applying Terraform plan...");
             executeTerraform(workDir, "apply", "-auto-approve", "-input=false",
                     "-var", "aws_region=" + region,
                     "-var", "availability_zone=" + az);
 
             captureOutputs(workDir);
 
+            printInfrastructureTable();
+            System.out.println("[ignis-cloud] Infrastructure ready.");
             LOGGER.info("Terraform infrastructure applied successfully.");
 
         } catch (Exception e) {
@@ -151,7 +156,7 @@ public class TerraformManager {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    System.out.println("[Terraform out] " + line);
+                    LOGGER.debug("[Terraform out] " + line);
                 }
             }
             int exitCode = process.waitFor();
@@ -253,10 +258,12 @@ public class TerraformManager {
         }
 
         try{
+            System.out.println("[ignis-cloud] Destroying infrastructure...");
             executeTerraform(this.workDir, "destroy", "-auto-approve", "-input=false",
                     "-var", "aws_region=" + region,
                     "-var", "availability_zone=" + az);
             LOGGER.info("Destroy completed");
+            System.out.println("[ignis-cloud] Infrastructure destroyed.");
         } catch (Exception e){
             LOGGER.error("Failed to destroy Terraform", e);
             throw new ISchedulerException("Failed to destroy Terraform", e);
@@ -275,5 +282,31 @@ public class TerraformManager {
         } catch (Exception e){
             LOGGER.error("Failed to cleanup Terraform", e);
         }
+    }
+
+    private void printInfrastructureTable() {
+        String vpc    = outputs.getOrDefault("vpc_id",           "N/A");
+        String subnet = outputs.getOrDefault("subnet_id",        "N/A");
+        String sg     = outputs.getOrDefault("sg_id",            "N/A");
+        String bucket = outputs.getOrDefault("jobs_bucket_name", "N/A");
+
+        int col1 = 20;
+        int col2 = Math.max(50, Math.max(Math.max(vpc.length(), subnet.length()),
+                Math.max(sg.length(), bucket.length())) + 2);
+
+        String separator = "+" + "-".repeat(col1 + 2) + "+" + "-".repeat(col2 + 2) + "+";
+        String fmt = "| %-" + col1 + "s | %-" + col2 + "s |";
+
+        System.out.println();
+        System.out.println("[ignis-cloud] Provisioned infrastructure:");
+        System.out.println(separator);
+        System.out.printf((fmt) + "%n", "Resource", "Value");
+        System.out.println(separator);
+        System.out.printf((fmt) + "%n", "VPC ID",           vpc);
+        System.out.printf((fmt) + "%n", "Subnet ID",        subnet);
+        System.out.printf((fmt) + "%n", "Security Group ID", sg);
+        System.out.printf((fmt) + "%n", "S3 Bucket",        bucket);
+        System.out.println(separator);
+        System.out.println();
     }
 }
