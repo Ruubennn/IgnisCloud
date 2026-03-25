@@ -6,21 +6,27 @@ import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
 import software.amazon.awssdk.services.ssm.SsmClient;
 import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
+
+import java.io.Closeable;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 
-public class EC2Operations {
+public class EC2Operations implements Closeable {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(EC2Operations.class);
     private final AwsFactory awsFactory;
+    private final Ec2Client ec2;
+    private final SsmClient ssm;
 
-    public EC2Operations(AwsFactory awsFactory) {
+    public EC2Operations(Ec2Client ec2, SsmClient ssm, AwsFactory awsFactory) {
+        this.ec2 = ec2;
+        this.ssm = ssm;
         this.awsFactory = awsFactory;
     }
 
     // Reference [19], [22], [23]
     public String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam, InstanceType instanceType, String iamInstanceProfile) throws ISchedulerException {
-        try (Ec2Client ec2 = awsFactory.createEc2Client()){
+        try{
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
                     .imageId(amiId)
                     .instanceType(instanceType)
@@ -57,7 +63,7 @@ public class EC2Operations {
 
     // Reference: [40]
     public void terminateInstance(String instanceId) throws ISchedulerException {
-        try (Ec2Client ec2 = awsFactory.createEc2Client()){
+        try{
             TerminateInstancesRequest request = TerminateInstancesRequest.builder()
                     .instanceIds(instanceId)
                     .build();
@@ -75,7 +81,7 @@ public class EC2Operations {
         if (instanceId == null || instanceId.trim().isEmpty()){
             throw new ISchedulerException("Instance id can't be null or empty");
         }
-        try (Ec2Client ec2 = awsFactory.createEc2Client()){
+        try{
             DescribeInstancesRequest request = DescribeInstancesRequest.builder()
                     .instanceIds(instanceId)
                     .build();
@@ -88,12 +94,16 @@ public class EC2Operations {
                         }
                 }
             }
-            LOGGER.error("Instance not found: {}", instanceId);
+            LOGGER.debug("Instance not found: {}", instanceId);
             return null;
 
-        } catch (Ec2Exception e){
-            LOGGER.error("Failed to get instance info", e);
-            return null;
+        } catch (Ec2Exception e) {
+            if ("i-0000000000000".equals(instanceId)) {
+                LOGGER.debug("Ignoring error for dummy instance: {}", e.getMessage());
+                return null;
+            }
+            LOGGER.error("Failed to get instance info for {}: {}", instanceId, e.getMessage());
+            throw new ISchedulerException("Failed to get instance info for " + instanceId, e);
         }
     }
 
@@ -137,7 +147,7 @@ public class EC2Operations {
 
         String paramName = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64";
 
-        try (SsmClient ssm = awsFactory.createSsmClient()) {
+        try{
             return ssm.getParameter(GetParameterRequest.builder()
                             .name(paramName)
                             .build())
@@ -157,7 +167,7 @@ public class EC2Operations {
         }
 
         // 2. Search available AZs at the region
-        try (Ec2Client ec2 = awsFactory.createEc2Client()) {
+        try{
             DescribeAvailabilityZonesRequest request = DescribeAvailabilityZonesRequest.builder()
                     .filters(Filter.builder()
                             .name("state")
@@ -179,6 +189,11 @@ public class EC2Operations {
         String fallback = awsFactory.getRegion().id() + "a";
         LOGGER.info("Using fallback AZ: {}", fallback);
         return fallback;
+    }
 
+    @Override
+    public void close() {
+        ec2.close();
+        ssm.close();
     }
 }

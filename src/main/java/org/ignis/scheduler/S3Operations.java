@@ -7,6 +7,7 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.*;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,21 +15,21 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
-public class S3Operations {
+public class S3Operations implements Closeable {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(S3Operations.class);
     private final ObjectMapper mapper = new ObjectMapper();
 
     private static final String JOBS_PREFIX = "jobs/";
     private static final String DEFAULT_BUNDLE_FILENAME = "bundle.tar.gz";
 
-    private final AwsFactory awsFactory;
+    private final S3Client s3;
 
-    public S3Operations(AwsFactory awsFactory) {
-        this.awsFactory = awsFactory;
+    public S3Operations(S3Client s3) {
+        this.s3 = s3;
     }
 
     private String uploadToS3(String bucket, String key, RequestBody body) throws ISchedulerException {
-        try (S3Client s3 = awsFactory.createS3Client()) {
+        try{
             PutObjectRequest put = PutObjectRequest.builder()
                     .bucket(bucket)
                     .key(key)
@@ -93,7 +94,7 @@ public class S3Operations {
             effectivePrefix = effectivePrefix.substring(0, effectivePrefix.length() - 1);
         }
 
-        try(S3Client s3 = this.awsFactory.createS3Client()){
+        try{
         String nextContinuationToken = null;
         List<S3Object> contents = new ArrayList<>();
 
@@ -155,7 +156,7 @@ public class S3Operations {
        List<S3Object> objects = listObjectsInBucket(bucket, prefix);
        int succesCount = 0;
 
-       try(S3Client s3 = this.awsFactory.createS3Client()){
+        try{
 
 
         for(S3Object s3Object : objects) {
@@ -182,7 +183,9 @@ public class S3Operations {
                throw new ISchedulerException("Error downloading", e);
            }
         }
-       }
+       } catch(Exception e){
+            throw new ISchedulerException("Error downloading S3 Objects", e);
+        }
        LOGGER.debug("Download S3 Objects: {}", objects);
        return succesCount;
     }
@@ -217,7 +220,7 @@ public class S3Operations {
     }
 
     public void putString(String bucket, String key, String content, String contentType) throws ISchedulerException {
-        try(S3Client s3 = awsFactory.createS3Client()) {
+        try{
             s3.putObject(
                     PutObjectRequest.builder()
                             .bucket(bucket)
@@ -232,7 +235,7 @@ public class S3Operations {
     }
 
     public String getString(String bucket, String key) throws ISchedulerException {
-        try(var s3 = awsFactory.createS3Client()) {
+        try{
             ResponseBytes<GetObjectResponse> bytes = s3.getObjectAsBytes(
                     GetObjectRequest.builder().bucket(bucket).key(key).build());
             return bytes.asUtf8String();
@@ -273,7 +276,7 @@ public class S3Operations {
 
     public void emptyBucket(String bucket) throws ISchedulerException {
         LOGGER.info("Emptying bucket {}", bucket);
-        try (S3Client s3 = awsFactory.createS3Client()) {
+        try{
             String continuationToken = null;
             do {
                 ListObjectsV2Request.Builder requestBuilder = ListObjectsV2Request.builder()
@@ -304,5 +307,10 @@ public class S3Operations {
         } catch (Exception e) {
             throw new ISchedulerException("Failed to empty bucket " + bucket, e);
         }
+    }
+
+    @Override
+    public void close(){
+        s3.close();
     }
 }

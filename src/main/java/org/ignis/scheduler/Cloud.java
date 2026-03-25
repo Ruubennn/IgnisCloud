@@ -10,7 +10,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
+import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.ssm.SsmClient;
 
 public class Cloud implements IScheduler {
     private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(Cloud.class);
@@ -44,9 +47,15 @@ public class Cloud implements IScheduler {
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
         this.awsFactory = new AwsFactory(resolveRegion());
-        this.ec2 = new EC2Operations(awsFactory);
+
+        // Build clients
+        Ec2Client ec2Client = awsFactory.createEc2Client();
+        S3Client s3Client = awsFactory.createS3Client();
+        SsmClient ssmClient = awsFactory.createSsmClient();
+
+        this.ec2 = new EC2Operations(ec2Client, ssmClient, awsFactory);
         this.terraformManager = new TerraformManager(awsFactory.getRegion().id(), ec2.resolveAvailabilityZone());
-        this.s3 = new S3Operations(awsFactory);
+        this.s3 = new S3Operations(s3Client);
         this.userDataBuilder = new UserDataBuilder();
         this.bundleCreator = new BundleCreator();
         this.payloadResolver = new PayloadResolver();
@@ -230,6 +239,24 @@ public class Cloud implements IScheduler {
         }
     }
 
+    private void cleanupInfrastructure(String bucket) {
+        try {
+            s3.emptyBucket(bucket);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to empty bucket {}", bucket, e);
+        }
+        closeClients();
+        try {
+            terraformManager.destroy();
+        } catch (Exception e) {
+            LOGGER.warn("Failed to destroy Terraform infrastructure", e);
+        }
+    }
+
+    private void closeClients() {
+        ec2.close();
+        s3.close();
+    }
 
     @Override
     public String createJob(String name, IClusterRequest driver, IClusterRequest... executors) throws ISchedulerException {
@@ -305,39 +332,21 @@ public class Cloud implements IScheduler {
                     LOGGER.warn("Failed to download results for job {}", jobId, e);
                     System.out.println("[ignis-cloud] Warning: could not download results. Available at: s3://" + bucket + "/jobs/" + jobId + "/results/");
                 }
-
-                try {
-                    System.out.println("[ignis-cloud] Cleaning up infrastructure...");
-                    s3.emptyBucket(bucket);
-                    terraformManager.destroy();
-                    System.out.println("[ignis-cloud] Infrastructure cleaned up.");
-                } catch (Exception e) {
-                    LOGGER.warn("Failed to destroy infrastructure for job {}", jobId, e);
-                    System.out.println("[ignis-cloud] Warning: could not clean up infrastructure automatically.");
-                }
-
+                System.out.println("[ignis-cloud] Cleaning up infrastructure...");
+                cleanupInfrastructure(bucket);
+                System.out.println("[ignis-cloud] Infrastructure cleaned up.");
                 break;
 
             } else if (status == IContainerInfo.IStatus.ERROR || status == IContainerInfo.IStatus.DESTROYED) {
                 System.out.println("\n[ignis-cloud] Job failed with status: " + status);
                 LOGGER.error("Job {} failed with status {}", jobId, status);
-                try {
-                    s3.emptyBucket(bucket);
-                    terraformManager.destroy();
-                } catch (Exception e) {
-                    LOGGER.warn("Failed to destroy infrastructure after job failure", e);
-                }
+                cleanupInfrastructure(bucket);
                 break;
             }
             // TIMEOUT CHECK
             if (System.currentTimeMillis() - start > maxWaitMs) {
                 System.out.println("\n[ignis-cloud] Timeout reached. Results at: s3://" + bucket + "/jobs/" + jobId + "/");
-                try {
-                    s3.emptyBucket(bucket);
-                    terraformManager.destroy();
-                } catch (Exception e) {
-                    LOGGER.warn("Failed to destroy infrastructure after timeout", e);
-                }
+                cleanupInfrastructure(bucket);
                 break;
             }
             try{
