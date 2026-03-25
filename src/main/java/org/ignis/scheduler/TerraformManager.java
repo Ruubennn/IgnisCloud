@@ -98,7 +98,11 @@ public class TerraformManager {
             throw new IOException("Cannot find resource " + TF_RESOURCE_DIR);
         }
         if (!url.getProtocol().equals("jar")) {
-            throw new IOException("Cannot find resource " + TF_RESOURCE_DIR);
+            throw new IOException(
+                    "Terraform resources must be loaded from a JAR. " +
+                            "Got protocol '" + url.getProtocol() + "'. " +
+                            "Make sure the scheduler is packaged with 'gradle jarlibs'."
+            );
         }
         String jarPath = url.toString().split("!")[0].substring("jar:".length());
         String prefix = TF_RESOURCE_DIR + "/";
