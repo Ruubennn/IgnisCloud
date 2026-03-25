@@ -276,7 +276,7 @@ public class Cloud implements IScheduler {
         if (iamInstanceProfile == null || iamInstanceProfile.isBlank()) {
             throw new ISchedulerException("Missing IGNIS_IAM_INSTANCE_PROFILE (IAM creation disabled in this AWS account)");
         }
-        if(subnet == null || sg == null || bucket == null) { // TODO: IAM /*iamRoleArn == null ||*/
+        if(subnet == null || sg == null || bucket == null) {
             throw new ISchedulerException("Terraform outputs not found");
         }
 
@@ -388,9 +388,17 @@ public class Cloud implements IScheduler {
                     ec2.terminateInstance(instanceId);
                     LOGGER.info("EC2 instance {} terminated for job {}", instanceId, id);
             }
-            jobs.remove(id);
         }catch(Exception e){
             throw new ISchedulerException("Error terminating EC2 instance for job " + id, e);
+        } finally {
+            jobs.remove(id);
+        }
+
+        boolean isRuntime = Boolean.parseBoolean(System.getenv("IGNIS_CLOUD_RUNTIME"));
+        if (!isRuntime) {
+            cleanupInfrastructure(meta.bucket());
+        } else {
+            LOGGER.info("Runtime mode: skipping infrastructure cleanup for job {}", id);
         }
     }
 
@@ -727,13 +735,11 @@ public class Cloud implements IScheduler {
         }
 
         // Verify AWS conectivity
-        try{
-            ec2.getInstanceState("i-0000000000000");
+        try {
+            ec2.verifyConnectivity();
             LOGGER.info("AWS health check passed");
-        } catch(ISchedulerException e){
-            LOGGER.info("AWS health check passed");
-        } catch(Exception e){
-            throw new ISchedulerException("Failed to check AWS health check", e);
+        } catch (Exception e) {
+            throw new ISchedulerException("AWS connectivity check failed", e);
         }
         LOGGER.info("Finished health check for Cloud scheduler");
     }

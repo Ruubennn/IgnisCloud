@@ -63,13 +63,21 @@ public class EC2Operations implements Closeable {
 
     // Reference: [40]
     public void terminateInstance(String instanceId) throws ISchedulerException {
-        try{
+        try {
             TerminateInstancesRequest request = TerminateInstancesRequest.builder()
                     .instanceIds(instanceId)
                     .build();
             ec2.terminateInstances(request);
-            LOGGER.info("Successfully terminated instance: {}", instanceId);
-        } catch (Ec2Exception e){
+            LOGGER.info("Termination requested for instance: {}", instanceId);
+
+            ec2.waiter().waitUntilInstanceTerminated(
+                    DescribeInstancesRequest.builder()
+                            .instanceIds(instanceId)
+                            .build()
+            );
+            LOGGER.info("Instance {} fully terminated", instanceId);
+
+        } catch (Ec2Exception e) {
             String code = e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : null;
             if ("InvalidInstanceID.NotFound".equals(code)) return;
             throw new ISchedulerException("Failed to terminate instance " + instanceId, e);
@@ -98,10 +106,6 @@ public class EC2Operations implements Closeable {
             return null;
 
         } catch (Ec2Exception e) {
-            if ("i-0000000000000".equals(instanceId)) {
-                LOGGER.debug("Ignoring error for dummy instance: {}", e.getMessage());
-                return null;
-            }
             LOGGER.error("Failed to get instance info for {}: {}", instanceId, e.getMessage());
             throw new ISchedulerException("Failed to get instance info for " + instanceId, e);
         }
@@ -129,15 +133,31 @@ public class EC2Operations implements Closeable {
         int cpus = driver.resources().cpus();
         long ram = driver.resources().memory() / (1024L * 1024L);
 
-        if (cpus <= 2 && ram <= 1024) return InstanceType.T3_MICRO;
+       /* if (cpus <= 2 && ram <= 1024) return InstanceType.T3_MICRO;
         if (cpus <= 2 && ram <= 2048) return InstanceType.T3_SMALL;
         if (cpus <= 2 && ram <= 4096) return InstanceType.T3_MEDIUM;
         if (cpus <= 2 && ram <= 8192) return InstanceType.T3_LARGE;
         if (cpus <= 4 && ram <= 16384) return InstanceType.T3_XLARGE;
-        if (cpus <= 8 && ram <= 32768) return InstanceType.T3_2_XLARGE;
+        if (cpus <= 8 && ram <= 32768) return InstanceType.T3_2_XLARGE;*/
+
+        // T3 para cargas ligeras (burst)
+        if (cpus <= 2 && ram <= 2048)  return InstanceType.T3_SMALL;
+        if (cpus <= 2 && ram <= 4096)  return InstanceType.T3_MEDIUM;
+        if (cpus <= 2 && ram <= 8192)  return InstanceType.T3_LARGE;
+
+        // M6i para cargas de propósito general sostenido
+        if (cpus <= 2  && ram <= 16384) return InstanceType.M6_I_LARGE;
+        if (cpus <= 4  && ram <= 32768) return InstanceType.M6_I_XLARGE;
+        if (cpus <= 8  && ram <= 65536) return InstanceType.M6_I_2_XLARGE;
+        if (cpus <= 16 && ram <= 131072) return InstanceType.M6_I_4_XLARGE;
+
+        // C6i para cargas CPU-intensivas
+        if (cpus <= 32) return InstanceType.C6_I_8_XLARGE;
+
+        return InstanceType.M6_I_2_XLARGE; // fallback razonable
         // TODO: analizar otras familias y requisitos MEJOR
 
-        return InstanceType.T3_LARGE;
+        // return InstanceType.T3_LARGE;
     }
 
     // Reference: [46], [47]
@@ -189,6 +209,17 @@ public class EC2Operations implements Closeable {
         String fallback = awsFactory.getRegion().id() + "a";
         LOGGER.info("Using fallback AZ: {}", fallback);
         return fallback;
+    }
+
+    public void verifyConnectivity() throws ISchedulerException {
+        try {
+            ec2.describeAvailabilityZones(
+                    DescribeAvailabilityZonesRequest.builder().build()
+            );
+        } catch (Ec2Exception e) {
+            throw new ISchedulerException("Cannot connect to AWS: " +
+                    (e.awsErrorDetails() != null ? e.awsErrorDetails().errorMessage() : e.getMessage()), e);
+        }
     }
 
     @Override
