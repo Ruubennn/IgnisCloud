@@ -37,6 +37,9 @@ export IMAGE='{{IMAGE}}'
 export CMD='{{CMD}}'
 export IGNIS_SCHEDULER_ENV_JOB="$JOB_ID"
 export IGNIS_JOB_ID="$JOB_ID"
+export IGNIS_SUBNET_ID='{{SUBNET_ID}}'
+export IGNIS_SG_ID='{{SG_ID}}'
+export IGNIS_IAM_INSTANCE_PROFILE='{{IAM_INSTANCE_PROFILE}}'
 
 # Instance ID from metadata
 IID="unknown"
@@ -147,6 +150,9 @@ docker run --rm \
   -e IGNIS_JOB_SOCKETS="/opt/ignis/jobs/$JOB_ID/sockets" \
   -e IGNIS_WDIR="/ignis/dfs/payload" \
   -e IGNIS_JOBS_BUCKET="$BUCKET" \
+  -e IGNIS_SUBNET_ID="$IGNIS_SUBNET_ID" \
+  -e IGNIS_SG_ID="$IGNIS_SG_ID" \
+  -e IGNIS_IAM_INSTANCE_PROFILE="$IGNIS_IAM_INSTANCE_PROFILE" \
   -v /ignis/dfs:/ignis/dfs \
   -v /var/tmp/ignis-cloud:/var/tmp/ignis-cloud \
   -v /var/run/docker.sock:/var/run/docker.sock \
