@@ -21,3 +21,7 @@ output "jobs_bucket_name" {
 //output "aws_iam_instance_profile" {
  // value = aws_iam_instance_profile.ignis_profile.name
 //}
+
+output "efs_fs_id" {
+  value = aws_efs_file_system.ignis_jobs_fs.id
+}

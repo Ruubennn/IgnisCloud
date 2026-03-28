@@ -213,6 +213,7 @@ public class TerraformManager {
             //outputs.put("iam_role_arn", getOutputValue(root, "iam_role_arn"));
             outputs.put("jobs_bucket_name", getOutputValue(root, "jobs_bucket_name"));
             //outputs.put("aws_iam_instance_profile", getOutputValue(root, "aws_iam_instance_profile"));
+            outputs.put("efs_fs_id",  getOutputValue(root, "efs_fs_id"));
 
         } catch (Exception e){
             LOGGER.error("Failed to capture Terraform outputs in directory {}", workDir, e);
@@ -293,10 +294,15 @@ public class TerraformManager {
         String subnet = outputs.getOrDefault("subnet_id",        "N/A");
         String sg     = outputs.getOrDefault("sg_id",            "N/A");
         String bucket = outputs.getOrDefault("jobs_bucket_name", "N/A");
+        String efs    = outputs.getOrDefault("efs_fs_id",        "N/A");
 
         int col1 = 20;
-        int col2 = Math.max(50, Math.max(Math.max(vpc.length(), subnet.length()),
-                Math.max(sg.length(), bucket.length())) + 2);
+        int col2 = Math.max(50, Math.max(
+                Math.max(Math.max(vpc.length(), subnet.length()),
+                        Math.max(sg.length(), bucket.length())),
+                efs.length()) + 2);
+        /*int col2 = Math.max(50, Math.max(Math.max(vpc.length(), subnet.length()),
+                Math.max(sg.length(), bucket.length())) + 2);*/
 
         String separator = "+" + "-".repeat(col1 + 2) + "+" + "-".repeat(col2 + 2) + "+";
         String fmt = "| %-" + col1 + "s | %-" + col2 + "s |";
@@ -310,6 +316,7 @@ public class TerraformManager {
         System.out.printf((fmt) + "%n", "Subnet ID",        subnet);
         System.out.printf((fmt) + "%n", "Security Group ID", sg);
         System.out.printf((fmt) + "%n", "S3 Bucket",        bucket);
+        System.out.printf((fmt) + "%n", "EFS File System ID", efs);
         System.out.println(separator);
         System.out.println();
     }

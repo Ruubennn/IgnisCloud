@@ -113,6 +113,43 @@ resource "aws_s3_bucket_public_access_block" "ignis_jobs" {
   restrict_public_buckets = true
 }
 
+resource "aws_security_group" "ignis_efs_sg" {
+  name = "ignis-efs-sg"
+  description = "Security group for Ignis EFS"
+  vpc_id = aws_vpc.ignis_vpc.id
+
+  ingress {
+    description = "NFS from Ignis instances"
+    from_port = 2049
+    to_port = 2049
+    protocol = "tcp"
+    security_groups = [aws_security_group.ignis_sg.id]
+  }
+
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "ignis-efs-sg"
+  }
+}
+
+resource "aws_efs_file_system" "ignis_jobs_fs" {
+  encrypted = true
+  performance_mode = "generalPurpose"
+  throughput_mode = "bursting"
+}
+
+resource "aws_efs_mount_target" "ignis_jobs_mt" {
+  file_system_id = aws_efs_file_system.ignis_jobs_fs.id
+  subnet_id      = aws_subnet.ignis_subnet.id
+  security_groups = [aws_security_group.ignis_efs_sg.id]
+}
+
 // IAM Role
 //resource "aws_iam_role" "ignis_scheduler_role" {
 //  name = "ignis-scheduler-role"

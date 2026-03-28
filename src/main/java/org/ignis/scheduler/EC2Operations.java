@@ -42,6 +42,7 @@ public class EC2Operations implements Closeable {
                 tags.add(Tag.builder().key("JobId").value(jobId).build());
             }
 
+            // TODO: el IAM iba con el driver pero no con los executors (iamInstanceProfile)
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
                     .imageId(amiId)
                     .instanceType(instanceType)
@@ -50,7 +51,7 @@ public class EC2Operations implements Closeable {
                     .subnetId(subnet)
                     .securityGroupIds(sgId)
                     .iamInstanceProfile(IamInstanceProfileSpecification.builder()
-                            .name(iamInstanceProfile)
+                            .name("LabRole")
                             .build())
                     .instanceInitiatedShutdownBehavior(ShutdownBehavior.TERMINATE)
                     .userData(Base64.getEncoder().encodeToString(userDataScript.getBytes(StandardCharsets.UTF_8)))

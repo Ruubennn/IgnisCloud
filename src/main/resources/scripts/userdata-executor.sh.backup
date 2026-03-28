@@ -1,0 +1,112 @@
+#!/bin/bash
+set -euo pipefail
+
+exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+echo "[executor] starting..."
+
+# Dependencies installation
+if grep -qi "Amazon Linux" /etc/os-release; then
+  echo "[executor] detected Amazon Linux"
+  dnf -y makecache
+  dnf -y update
+  dnf -y swap curl-minimal curl-full --allowerasing || true
+  dnf -y swap libcurl-minimal libcurl-full --allowerasing || true
+  dnf -y install tar gzip docker awscli-2
+  systemctl enable --now docker
+else
+  echo "[executor] non-Amazon Linux, using apt fallback"
+  apt-get update -y
+  apt-get install -y docker.io awscli tar gzip curl
+  systemctl enable --now docker
+fi
+
+command -v aws    >/dev/null 2>&1 || { echo "[executor] ERROR: aws not found";    exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "[executor] ERROR: docker not found"; exit 1; }
+
+docker --version
+aws --version || true
+
+# Env variables
+export REGION='{{REGION}}'
+export BUCKET='{{BUCKET}}'
+export JOB_ID='{{JOB_ID}}'
+export CONTAINER_NAME='{{CONTAINER_NAME}}'
+export BUNDLE_KEY='{{BUNDLE_KEY}}'
+export IMAGE='{{IMAGE}}'
+export IGNIS_SCHEDULER_ENV_JOB="$JOB_ID"
+export IGNIS_JOB_ID="$JOB_ID"
+
+# Instance ID from metadata
+IID="unknown"
+TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
+
+if [ -n "$TOKEN" ]; then
+  IID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
+else
+  IID=$(curl -fsS http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
+fi
+
+echo "[executor] instance-id=$IID"
+
+# Bundle and payload download (identical to driver)
+echo "[executor] downloading bundle s3://$BUCKET/$BUNDLE_KEY"
+aws --region "$REGION" s3 cp "s3://$BUCKET/$BUNDLE_KEY" /tmp/bundle.tar.gz
+
+mkdir -p /ignis
+tar -xzf /tmp/bundle.tar.gz -C /
+
+echo "[executor] downloading large payload files from S3..."
+aws s3 sync "s3://${BUCKET}/jobs/${JOB_ID}/payload/large/" "/ignis/dfs/payload/" --quiet || true
+echo "[executor] large files ready."
+
+# Pull Docker image
+echo "[executor] pulling image $IMAGE"
+docker pull "$IMAGE"
+
+# Create job directories
+mkdir -p "/opt/ignis/jobs/$JOB_ID"
+chmod 777 "/opt/ignis/jobs/$JOB_ID"
+
+# Launch executor container
+echo "[executor] launching executor container: $CONTAINER_NAME"
+
+set +e
+docker run -d \
+  --name "$CONTAINER_NAME" \
+  --network host \
+  -e IGNIS_JOB_ID="$JOB_ID" \
+  -e IGNIS_SCHEDULER_ENV_JOB="$JOB_ID" \
+  -e IGNIS_SCHEDULER_ENV_CONTAINER="$CONTAINER_NAME" \
+  -e IGNIS_JOB_DIR="/opt/ignis/jobs/$JOB_ID" \
+  -e IGNIS_HOME=/opt/ignis \
+  -e IGNIS_WDIR="/ignis/dfs/payload" \
+{{EXECUTOR_ENV}} \
+  -v /ignis/dfs:/ignis/dfs \
+  -v "/opt/ignis/jobs/$JOB_ID:/opt/ignis/jobs/$JOB_ID" \
+  "$IMAGE" {{EXECUTOR_CMD}}
+
+echo "[executor] container exited, shutting down"
+set -e
+shutdown -h now
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

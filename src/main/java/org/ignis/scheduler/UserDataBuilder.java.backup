@@ -11,9 +11,7 @@ public class UserDataBuilder {
     private static final String DRIVER_TEMPLATE_PATH = "scripts/userdata.sh";
     private static final String EXECUTOR_TEMPLATE_PATH = "scripts/userdata-executor.sh";
 
-    public String buildUserData(String instanceType, String region, String jobName, String jobId, String bucket, String bundleKey,
-                                String subnetId, String sgId, String image, String command, String iamInstanceProfile,
-                                String ami, String efsFsId) throws ISchedulerException {
+    public String buildUserData(String instanceType, String region, String jobName, String jobId, String bucket, String bundleKey, String subnetId, String sgId, String image, String command, String iamInstanceProfile, String ami, String efsFsId) throws ISchedulerException{
         String template = loadTemplate(DRIVER_TEMPLATE_PATH);
 
         Map<String, String> vars = new HashMap<>();
@@ -26,25 +24,21 @@ public class UserDataBuilder {
         vars.put("REGION", region);
         vars.put("SUBNET_ID", shellEscapeSingleQuotes(subnetId));
         vars.put("SG_ID", shellEscapeSingleQuotes(sgId));
-        vars.put("IAM_INSTANCE_PROFILE", shellEscapeSingleQuotes(iamInstanceProfile));
-        vars.put("AMI", shellEscapeSingleQuotes(ami));
+        vars.put("IAM_INSTANCE_PROFILE",  shellEscapeSingleQuotes(iamInstanceProfile));
+        vars.put("AMI",  shellEscapeSingleQuotes(ami));
         vars.put("INSTANCE_TYPE", shellEscapeSingleQuotes(instanceType));
         vars.put("EFS_FS_ID", shellEscapeSingleQuotes(efsFsId));
 
         return renderTemplate(template, vars);
     }
 
-    public String buildExecutorUserData(String region, String jobId, String containerName, String bucket, String bundleKey,
-                                        String image, Map<String, String> env, List<String> args, String efsFsId)
-            throws ISchedulerException {
+    public String buildExecutorUserData(String region, String jobId, String containerName, String bucket, String bundleKey, String image, Map<String, String> env, List<String> args) throws ISchedulerException{
         String template = loadTemplate(EXECUTOR_TEMPLATE_PATH);
 
         StringBuilder envFlags = new StringBuilder();
-        if (env != null) {
-            for (var e : env.entrySet()) {
-                envFlags.append("  -e ").append(e.getKey()).append("='")
-                        .append(shellEscapeSingleQuotes(e.getValue())).append("' \\\n");
-            }
+        for (var e : env.entrySet()) {
+            envFlags.append("  -e ").append(e.getKey()).append("='")
+                    .append(shellEscapeSingleQuotes(e.getValue())).append("' \\\n");
         }
 
         Map<String, String> vars = new HashMap<>();
@@ -54,39 +48,27 @@ public class UserDataBuilder {
         vars.put("BUCKET", shellEscapeSingleQuotes(bucket));
         vars.put("BUNDLE_KEY", shellEscapeSingleQuotes(bundleKey));
         vars.put("IMAGE", shellEscapeSingleQuotes(image));
-        vars.put("EFS_FS_ID", shellEscapeSingleQuotes(efsFsId));
         vars.put("EXECUTOR_ENV", envFlags.toString());
-        vars.put("EXECUTOR_CMD", shellJoin(args));
+        vars.put("EXECUTOR_CMD", String.join(" ", args));
 
         return renderTemplate(template, vars);
     }
 
     private String loadTemplate(String resourcePath) throws ISchedulerException {
-        try (InputStream is = getClass().getClassLoader().getResourceAsStream(resourcePath)) {
+        try(InputStream is = getClass().getClassLoader().getResourceAsStream(resourcePath)){
             if (is == null) throw new ISchedulerException("Resource not found: " + resourcePath);
             return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (Exception e) {
+        } catch (Exception e){
             throw new ISchedulerException("Failed to load resource: " + resourcePath, e);
         }
     }
 
-    private String renderTemplate(String template, Map<String, String> vars) {
+    private String renderTemplate(String template, Map<String, String> vars){
         String result = template;
-        for (var e : vars.entrySet()) {
+        for(var e: vars.entrySet()){
             result = result.replace("{{" + e.getKey() + "}}", e.getValue());
         }
         return result;
-    }
-
-    private static String shellJoin(List<String> args) {
-        if (args == null || args.isEmpty()) return "";
-
-        StringBuilder joined = new StringBuilder();
-        for (String arg : args) {
-            if (joined.length() > 0) joined.append(' ');
-            joined.append('\'').append(shellEscapeSingleQuotes(arg)).append('\'');
-        }
-        return joined.toString();
     }
 
     private static String shellEscapeSingleQuotes(String s) {

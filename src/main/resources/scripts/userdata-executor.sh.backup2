@@ -8,6 +8,7 @@ echo "[executor] starting..."
 START_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
 CONTAINER_RC=1
 
+# Dependencies installation
 if grep -qi "Amazon Linux" /etc/os-release; then
   echo "[executor] detected Amazon Linux"
   dnf -y makecache
@@ -23,82 +24,23 @@ else
   systemctl enable --now docker
 fi
 
-command -v aws >/dev/null 2>&1 || { echo "[executor] ERROR: aws not found"; exit 1; }
+command -v aws    >/dev/null 2>&1 || { echo "[executor] ERROR: aws not found";    exit 1; }
 command -v docker >/dev/null 2>&1 || { echo "[executor] ERROR: docker not found"; exit 1; }
 
 docker --version
 aws --version || true
 
+# Env variables
 export REGION='{{REGION}}'
 export BUCKET='{{BUCKET}}'
 export JOB_ID='{{JOB_ID}}'
 export CONTAINER_NAME='{{CONTAINER_NAME}}'
 export BUNDLE_KEY='{{BUNDLE_KEY}}'
 export IMAGE='{{IMAGE}}'
-export EFS_FS_ID='{{EFS_FS_ID}}'
-export IGNIS_EFS_FS_ID="$EFS_FS_ID"
 export IGNIS_SCHEDULER_ENV_JOB="$JOB_ID"
 export IGNIS_JOB_ID="$JOB_ID"
 
-cleanup_and_finish() {
-  local rc="${1:-1}"
-  set +e
-
-  END_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
-  local state="FAILED"
-  [ "$rc" -eq 0 ] && state="FINISHED"
-
-  echo "[executor] finishing with rc=$rc state=$state"
-  echo "[executor] collecting docker diagnostics..."
-  docker ps -a || true
-
-  if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
-    docker logs "$CONTAINER_NAME" > /tmp/executor-container.log 2>&1 || true
-    docker inspect "$CONTAINER_NAME" > /tmp/executor-inspect.json 2>&1 || true
-  else
-    echo "[executor] container $CONTAINER_NAME not found in docker ps -a" > /tmp/executor-container.log
-    echo "{}" > /tmp/executor-inspect.json
-  fi
-
-  if [ -f "/opt/ignis/jobs/$JOB_ID/discovery/discovery.env" ]; then
-    cp "/opt/ignis/jobs/$JOB_ID/discovery/discovery.env" /tmp/discovery.env || true
-  fi
-  if [ -f "/opt/ignis/jobs/$JOB_ID/discovery/discovery.json" ]; then
-    cp "/opt/ignis/jobs/$JOB_ID/discovery/discovery.json" /tmp/discovery.json || true
-  fi
-
-  printf '{"state":"%s","rc":%s,"start":"%s","end":"%s","container":"%s"}\n' \
-    "$state" "$rc" "$START_TS" "$END_TS" "$CONTAINER_NAME" > /tmp/executor-status.json
-
-  echo "[executor] uploading logs to S3..."
-  aws --region "$REGION" s3 cp /var/log/user-data.log \
-    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-user-data.log" || true
-  aws --region "$REGION" s3 cp /tmp/executor-container.log \
-    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-container.log" || true
-  aws --region "$REGION" s3 cp /tmp/executor-inspect.json \
-    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-inspect.json" || true
-  aws --region "$REGION" s3 cp /tmp/executor-status.json \
-    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-status.json" || true
-
-  [ -f /tmp/discovery.env ] && aws --region "$REGION" s3 cp /tmp/discovery.env \
-    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-discovery.env" || true
-  [ -f /tmp/discovery.json ] && aws --region "$REGION" s3 cp /tmp/discovery.json \
-    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-discovery.json" || true
-
-  echo "[executor] shutting down instance"
-  shutdown -h now
-
-  exit "$rc"
-}
-
-trap 'rc=$?; trap - EXIT; cleanup_and_finish "$rc"' EXIT
-
 mount_jobs_efs() {
-  if [ -z "${IGNIS_EFS_FS_ID:-}" ]; then
-    echo "[executor] ERROR: IGNIS_EFS_FS_ID is empty"
-    return 1
-  fi
-
   mkdir -p /opt/ignis/jobs
 
   for i in $(seq 1 18); do
@@ -120,73 +62,71 @@ mount_jobs_efs() {
   return 1
 }
 
-fetch_instance_metadata() {
-  IID="unknown"
-  TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
-    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
-
-  if [ -n "$TOKEN" ]; then
-    IID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
-      http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
-  else
-    IID=$(curl -fsS http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
-  fi
-}
-
-wait_for_discovery_files() {
-  local env_file="/opt/ignis/jobs/$JOB_ID/discovery/discovery.env"
-  local json_file="/opt/ignis/jobs/$JOB_ID/discovery/discovery.json"
-
-  for i in $(seq 1 120); do
-    if [ -f "$env_file" ] || [ -f "$json_file" ]; then
-      echo "[executor] discovery file available after ${i}s"
-      return 0
-    fi
-    sleep 1
-  done
-
-  echo "[executor] WARNING: discovery file did not appear after 120s"
-  return 1
-}
-
-load_discovery() {
-  local env_file="/opt/ignis/jobs/$JOB_ID/discovery/discovery.env"
-  if [ -f "$env_file" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "$env_file"
-    set +a
-  fi
-
-  export DRIVER_PRIVATE_IP="${DRIVER_PRIVATE_IP:-}"
-  export DRIVER_INSTANCE_ID="${DRIVER_INSTANCE_ID:-}"
-  export DRIVER_HOST="${DRIVER_HOST:-}"
-  export DRIVER_PORT="${DRIVER_PORT:-}"
-  export DRIVER_URL="${DRIVER_URL:-}"
-  export DISCOVERY_MODE="${DISCOVERY_MODE:-tcp}"
-
-  echo "[executor] discovery loaded:"
-  echo "  DRIVER_INSTANCE_ID=${DRIVER_INSTANCE_ID:-}"
-  echo "  DRIVER_PRIVATE_IP=${DRIVER_PRIVATE_IP:-}"
-  echo "  DRIVER_HOST=${DRIVER_HOST:-}"
-  echo "  DRIVER_PORT=${DRIVER_PORT:-}"
-  echo "  DRIVER_URL=${DRIVER_URL:-}"
-  echo "  DISCOVERY_MODE=${DISCOVERY_MODE:-}"
-}
-
 mount_jobs_efs
+
 mkdir -p "/opt/ignis/jobs/$JOB_ID"
 chmod 777 "/opt/ignis/jobs/$JOB_ID"
 
-# Remove stale shared sockets if any. Executors should not rely on AF_UNIX sockets over EFS.
-find "/opt/ignis/jobs/$JOB_ID" -type s -delete || true
+cleanup_and_finish() {
+  local rc="${1:-1}"
+  set +e
 
-fetch_instance_metadata
+  END_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+  local state="FAILED"
+  [ "$rc" -eq 0 ] && state="FINISHED"
+
+  echo "[executor] finishing with rc=$rc state=$state"
+
+  echo "[executor] collecting docker diagnostics..."
+  docker ps -a || true
+
+  if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    docker logs "$CONTAINER_NAME" > /tmp/executor-container.log 2>&1 || true
+    docker inspect "$CONTAINER_NAME" > /tmp/executor-inspect.json 2>&1 || true
+  else
+    echo "[executor] container $CONTAINER_NAME not found in docker ps -a" > /tmp/executor-container.log
+    echo "{}" > /tmp/executor-inspect.json
+  fi
+
+  printf '{"state":"%s","rc":%s,"start":"%s","end":"%s","container":"%s"}\n' \
+    "$state" "$rc" "$START_TS" "$END_TS" "$CONTAINER_NAME" > /tmp/executor-status.json
+
+  echo "[executor] uploading logs to S3..."
+  aws --region "$REGION" s3 cp /var/log/user-data.log \
+    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-user-data.log" || true
+
+  aws --region "$REGION" s3 cp /tmp/executor-container.log \
+    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-container.log" || true
+
+  aws --region "$REGION" s3 cp /tmp/executor-inspect.json \
+    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-inspect.json" || true
+
+  aws --region "$REGION" s3 cp /tmp/executor-status.json \
+    "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME-status.json" || true
+
+  echo "[executor] shutting down instance"
+  shutdown -h now
+
+  exit "$rc"
+}
+
+trap 'rc=$?; trap - EXIT; cleanup_and_finish "$rc"' EXIT
+
+# Instance ID from metadata
+IID="unknown"
+TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
+
+if [ -n "$TOKEN" ]; then
+  IID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
+else
+  IID=$(curl -fsS http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
+fi
+
 echo "[executor] instance-id=$IID"
 
-wait_for_discovery_files || true
-load_discovery
-
+# Bundle and payload download
 echo "[executor] downloading bundle s3://$BUCKET/$BUNDLE_KEY"
 aws --region "$REGION" s3 cp "s3://$BUCKET/$BUNDLE_KEY" /tmp/bundle.tar.gz
 
@@ -197,11 +137,17 @@ echo "[executor] downloading large payload files from S3..."
 aws --region "$REGION" s3 sync "s3://${BUCKET}/jobs/${JOB_ID}/payload/large/" "/ignis/dfs/payload/" --quiet || true
 echo "[executor] large files ready."
 
+# Pull Docker image
 echo "[executor] pulling image $IMAGE"
 docker pull "$IMAGE"
 
+# Create job directories
+mkdir -p "/opt/ignis/jobs/$JOB_ID"
+chmod 777 "/opt/ignis/jobs/$JOB_ID"
+
+# Bootstrap script to restore authorized_keys inside container
 mkdir -p /tmp/ignis-ssh
-cat > /tmp/ignis-ssh/bootstrap.sh <<'EOF_BOOT'
+cat > /tmp/ignis-ssh/bootstrap.sh <<'EOF'
 #!/bin/bash
 set -e
 
@@ -218,10 +164,12 @@ fi
 
 echo "[bootstrap] exec: $*"
 exec "$@"
-EOF_BOOT
+EOF
 chmod +x /tmp/ignis-ssh/bootstrap.sh
 
+# Launch executor container
 echo "[executor] launching executor container: $CONTAINER_NAME"
+
 docker run -d \
   --name "$CONTAINER_NAME" \
   --network host \
@@ -230,22 +178,17 @@ docker run -d \
   -e IGNIS_SCHEDULER_ENV_CONTAINER="$CONTAINER_NAME" \
   -e IGNIS_JOB_DIR="/opt/ignis/jobs/$JOB_ID" \
   -e IGNIS_HOME=/opt/ignis \
-  -e IGNIS_WDIR=/ignis/dfs/payload \
-  -e IGNIS_DISCOVERY_FILE="/opt/ignis/jobs/$JOB_ID/discovery/discovery.env" \
-  -e IGNIS_DRIVER_INSTANCE_ID="${DRIVER_INSTANCE_ID:-}" \
-  -e IGNIS_DRIVER_PRIVATE_IP="${DRIVER_PRIVATE_IP:-}" \
-  -e IGNIS_DRIVER_HOST="${DRIVER_HOST:-}" \
-  -e IGNIS_DRIVER_PORT="${DRIVER_PORT:-}" \
-  -e IGNIS_DRIVER_URL="${DRIVER_URL:-}" \
-  -e IGNIS_DRIVER_DISCOVERY_MODE="${DISCOVERY_MODE:-tcp}" \
-  {{EXECUTOR_ENV}} \
+  -e IGNIS_WDIR="/ignis/dfs/payload" \
+{{EXECUTOR_ENV}} \
   -v /ignis/dfs:/ignis/dfs \
   -v "/opt/ignis/jobs/$JOB_ID:/opt/ignis/jobs/$JOB_ID" \
   -v /tmp/ignis-ssh/bootstrap.sh:/bootstrap.sh:ro \
   "$IMAGE" /bootstrap.sh {{EXECUTOR_CMD}}
 
+# Local readiness probe: check that the executor really exposes port 1963
 echo "[executor] waiting for port 1963 to be reachable on host..."
 PORT_READY=0
+
 for i in $(seq 1 120); do
   echo "[executor] readiness probe $i/120"
 
@@ -284,10 +227,7 @@ if [ "$PORT_READY" -ne 1 ]; then
   exit 1
 fi
 
-echo "===== JOB DIR TREE (executor host, shared EFS) ====="
-find "/opt/ignis/jobs/$JOB_ID" -maxdepth 4 -printf "%y %p\n" | sort || true
-echo "===== END JOB DIR TREE (executor host, shared EFS) ====="
-
+# Wait until container finishes
 echo "[executor] container is ready; waiting for completion..."
 set +e
 CONTAINER_RC=$(docker wait "$CONTAINER_NAME")
