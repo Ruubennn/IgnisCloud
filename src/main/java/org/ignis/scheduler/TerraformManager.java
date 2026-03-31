@@ -160,6 +160,7 @@ public class TerraformManager {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
+                    System.out.println("[Terraform out] " + line);
                     LOGGER.debug("[Terraform out] " + line);
                 }
             }

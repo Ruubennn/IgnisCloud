@@ -9,6 +9,7 @@ import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
 
 import java.io.Closeable;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
@@ -18,15 +19,29 @@ public class EC2Operations implements Closeable {
     private final Ec2Client ec2;
     private final SsmClient ssm;
 
+    private static final int IP_POLL_INTERVAL_MS = 2000;
+    private static final int IP_POLL_MAX_ATTEMPTS = 30; // 30 * 2s = 60s
+
     public EC2Operations(Ec2Client ec2, SsmClient ssm, AwsFactory awsFactory) {
         this.ec2 = ec2;
         this.ssm = ssm;
         this.awsFactory = awsFactory;
     }
 
-    // Reference [19], [22], [23]
     public String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam, InstanceType instanceType, String iamInstanceProfile) throws ISchedulerException {
+        return createEC2Instance(instanceName, userDataScript, amiId, subnet, sgId, iam, instanceType, iamInstanceProfile, null);
+    }
+
+    // Reference [19], [22], [23]
+    public String createEC2Instance(String instanceName, String userDataScript, String amiId, String subnet, String sgId, String iam, InstanceType instanceType, String iamInstanceProfile, String jobId) throws ISchedulerException {
         try{
+            List<Tag> tags = new ArrayList<>();
+            tags.add(Tag.builder().key("Name").value(instanceName).build());
+            tags.add(Tag.builder().key("JobName").value(instanceName.split("-")[0]).build());
+            if(jobId != null && !jobId.isBlank()){
+                tags.add(Tag.builder().key("JobId").value(jobId).build());
+            }
+
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
                     .imageId(amiId)
                     .instanceType(instanceType)
@@ -35,14 +50,13 @@ public class EC2Operations implements Closeable {
                     .subnetId(subnet)
                     .securityGroupIds(sgId)
                     .iamInstanceProfile(IamInstanceProfileSpecification.builder()
-                            .name(iamInstanceProfile)
+                            .name("LabRole")
                             .build())
                     .instanceInitiatedShutdownBehavior(ShutdownBehavior.TERMINATE)
                     .userData(Base64.getEncoder().encodeToString(userDataScript.getBytes(StandardCharsets.UTF_8)))
                     .tagSpecifications(TagSpecification.builder()
                             .resourceType(ResourceType.INSTANCE)
-                            .tags(Tag.builder().key("Name").value(instanceName).build(),
-                                    Tag.builder().key("JobName").value(instanceName.split("-")[0]).build())
+                            .tags(tags)
                             .build())
                     .build();
 
@@ -220,6 +234,105 @@ public class EC2Operations implements Closeable {
             throw new ISchedulerException("Cannot connect to AWS: " +
                     (e.awsErrorDetails() != null ? e.awsErrorDetails().errorMessage() : e.getMessage()), e);
         }
+    }
+
+    public String waitForPrivateIp(String instanceId) throws ISchedulerException {
+        LOGGER.info("Waiting for private IP of instance {}", instanceId);
+
+        for(int i=0; i < IP_POLL_MAX_ATTEMPTS; i++){
+            Instance inst = getInstanceInfo(instanceId);
+            if(inst != null && inst.privateIpAddress() != null && !inst.privateIpAddress().isBlank()) {
+                LOGGER.info("Private IP for {}: {} (after {} polls)", instanceId, inst.privateIpAddress(), i+1);
+                return inst.privateIpAddress();
+            }
+            try{
+                Thread.sleep(IP_POLL_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ISchedulerException("Interrupted while waiting for private IP of " + instanceId,e);
+            }
+        }
+        throw  new ISchedulerException("Timeout waiting for private IP of instance " + instanceId);
+    }
+
+    public void waitUntilRunning(String instanceId) throws ISchedulerException {
+        LOGGER.info("Waiting for instance {}", instanceId);
+        try{
+            ec2.waiter().waitUntilInstanceRunning(
+                    DescribeInstancesRequest.builder().instanceIds(instanceId).build()
+            );
+            LOGGER.info("Instance {} is now running", instanceId);
+        } catch (Exception e) {
+            throw new ISchedulerException("Failed waiting for instance " + instanceId + " to reach running state", e);
+        }
+    }
+
+    public void terminateInstancesByTag(String jobId) throws ISchedulerException {
+        LOGGER.info("Terminating all executor instances for job {}", jobId);
+
+        try{
+            DescribeInstancesRequest describeRequest = DescribeInstancesRequest.builder()
+                    .filters(
+                            Filter.builder().name("tag:JobId").values(jobId).build(),
+                            Filter.builder().name("instance-state-name").values("pending", "running", "stopping", "stopped").build()
+                    ).build();
+
+            List<String> instanceIds = new ArrayList<>();
+            ec2.describeInstancesPaginator(describeRequest).forEach(page ->
+                    page.reservations().forEach(r->
+                            r.instances().forEach(inst ->
+                                    instanceIds.add(inst.instanceId()))));
+
+            if(instanceIds.isEmpty()) {
+                LOGGER.info("No active executor instances found for job {}", jobId);
+                return;
+            }
+
+            LOGGER.info("Terminating {} executor instance(s) for job {}: {}", instanceIds.size(), jobId, instanceIds);
+
+            ec2.terminateInstances(TerminateInstancesRequest.builder().instanceIds(instanceIds).build());
+            LOGGER.info("Terminated {} executor instances for job {}", instanceIds.size(), jobId);
+        } catch (Ec2Exception e) {
+            throw new ISchedulerException("Failed to terminate executor instances for job " + jobId, e);
+        }
+    }
+
+    public List<Instance> describeInstancesByTag(String jobId) throws ISchedulerException {
+        try{
+            DescribeInstancesRequest request = DescribeInstancesRequest.builder()
+                    .filters(
+                            Filter.builder().name("tag:JobId").values(jobId).build(),
+                            Filter.builder().name(("instance-state-name")).values("pending", "running").build()
+                    ).build();
+
+            List<Instance> instances = new ArrayList<>();
+            ec2.describeInstancesPaginator(request).forEach(page ->
+                    page.reservations().forEach(r->
+                            instances.addAll(r.instances())));
+
+            LOGGER.debug("Found {} executor instances for job {}", instances.size(), jobId);
+            return instances;
+
+        } catch (Ec2Exception e) {
+            throw new ISchedulerException("Failed to describe executor instances for job " + jobId, e);
+        }
+    }
+
+    // En EC2Operations.java
+    public void waitForSsh(String ip) throws ISchedulerException {
+        LOGGER.info("Waiting for SSH on {}:22", ip);
+        for (int i = 0; i < 60; i++) {  // hasta 2 minutos (60 * 2s)
+            try (var s = new java.net.Socket()) {
+                s.connect(new java.net.InetSocketAddress(ip, 22), 2000);
+                LOGGER.info("SSH ready on {} after {} attempts", ip, i + 1);
+                return;
+            } catch (Exception ignored) {}
+            try { Thread.sleep(2000); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ISchedulerException("Interrupted waiting for SSH on " + ip, e);
+            }
+        }
+        throw new ISchedulerException("Timeout waiting for SSH on " + ip);
     }
 
     @Override

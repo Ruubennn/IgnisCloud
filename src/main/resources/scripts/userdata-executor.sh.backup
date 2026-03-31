@@ -1,0 +1,166 @@
+#!/bin/bash
+set -euo pipefail
+
+exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+echo "[executor] starting..."
+
+# Dependencies installation
+if grep -qi "Amazon Linux" /etc/os-release; then
+  echo "[executor] detected Amazon Linux"
+  dnf -y makecache
+  dnf -y update
+  dnf -y swap curl-minimal curl-full --allowerasing || true
+  dnf -y swap libcurl-minimal libcurl-full --allowerasing || true
+  dnf -y install tar gzip docker awscli-2
+  systemctl enable --now docker
+else
+  echo "[executor] non-Amazon Linux, using apt fallback"
+  apt-get update -y
+  apt-get install -y docker.io awscli tar gzip curl
+  systemctl enable --now docker
+fi
+
+command -v aws    >/dev/null 2>&1 || { echo "[executor] ERROR: aws not found";    exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "[executor] ERROR: docker not found"; exit 1; }
+
+docker --version
+aws --version || true
+
+# Env variables
+export REGION='{{REGION}}'
+export BUCKET='{{BUCKET}}'
+export JOB_ID='{{JOB_ID}}'
+export CONTAINER_NAME='{{CONTAINER_NAME}}'
+export BUNDLE_KEY='{{BUNDLE_KEY}}'
+export IMAGE='{{IMAGE}}'
+export IGNIS_SCHEDULER_ENV_JOB="$JOB_ID"
+export IGNIS_JOB_ID="$JOB_ID"
+
+# Instance ID and private IP from metadata
+IID="unknown"
+TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
+
+if [ -n "$TOKEN" ]; then
+  IID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
+  PRIVATE_IP=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/local-ipv4 || echo "")
+else
+  IID=$(curl -fsS http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
+  PRIVATE_IP=$(curl -fsS http://169.254.169.254/latest/meta-data/local-ipv4 || echo "")
+fi
+
+echo "[executor] instance-id=$IID"
+echo "[executor] private-ip=$PRIVATE_IP"
+
+# Bundle and payload download
+echo "[executor] downloading bundle s3://$BUCKET/$BUNDLE_KEY"
+aws --region "$REGION" s3 cp "s3://$BUCKET/$BUNDLE_KEY" /tmp/bundle.tar.gz
+
+mkdir -p /ignis
+tar -xzf /tmp/bundle.tar.gz -C /
+
+echo "[executor] downloading large payload files from S3..."
+aws s3 sync "s3://${BUCKET}/jobs/${JOB_ID}/payload/large/" "/ignis/dfs/payload/" --quiet || true
+echo "[executor] large files ready."
+
+# Pull Docker image
+echo "[executor] pulling image $IMAGE"
+docker pull "$IMAGE"
+
+# Create job directories
+mkdir -p "/opt/ignis/jobs/$JOB_ID"
+chmod 777 "/opt/ignis/jobs/$JOB_ID"
+
+# Wait for driver IP
+echo "[executor] waiting for driver IP..."
+DRIVER_IP=""
+for i in $(seq 1 30); do
+  DRIVER_IP=$(aws --region "$REGION" s3 cp \
+    "s3://$BUCKET/jobs/$JOB_ID/driver-ip.txt" - 2>/dev/null | tr -d '[:space:]' || true)
+  if [ -n "$DRIVER_IP" ]; then
+    echo "[executor] driver IP resolved: $DRIVER_IP"
+    break
+  fi
+  echo "[executor] waiting for driver IP... attempt $i"
+  sleep 3
+done
+
+if [ -z "$DRIVER_IP" ]; then
+  echo "[executor] ERROR: could not get driver IP"
+  shutdown -h now
+fi
+
+# Launch executor container
+echo "[executor] launching executor container: $CONTAINER_NAME"
+echo "[executor] EXECUTOR_CMD will be: {{EXECUTOR_CMD}}"
+
+mkdir -p "/opt/ignis/jobs/$JOB_ID/tmp/$CONTAINER_NAME"
+chmod 777 "/opt/ignis/jobs/$JOB_ID/tmp/$CONTAINER_NAME"
+
+
+# 1. Primero lanzar el proceso en background que vigila el fichero discovery
+DISCOVERY_FILE="/opt/ignis/jobs/$JOB_ID/tmp/$CONTAINER_NAME/discovery"
+(
+  for i in $(seq 1 60); do
+    if [ -f "$DISCOVERY_FILE" ]; then
+      echo "[executor] discovery file found: $(cat $DISCOVERY_FILE)"
+      aws --region "$REGION" s3 cp "$DISCOVERY_FILE" \
+        "s3://$BUCKET/jobs/$JOB_ID/discovery-$CONTAINER_NAME" || true
+      echo "[executor] discovery published to S3"
+      exit 0
+    fi
+    sleep 2
+  done
+  echo "[executor] WARNING: discovery file never appeared"
+) &
+
+  # Subir container.log a S3 periódicamente para diagnóstico
+  (
+    for i in $(seq 1 30); do
+      sleep 10
+      docker logs "$CONTAINER_NAME" > /tmp/executor-container.log 2>&1 || true
+      aws --region "$REGION" s3 cp /tmp/executor-container.log \
+        "s3://$BUCKET/jobs/$JOB_ID/executor-logs/$CONTAINER_NAME-container.log" \
+        --quiet || true
+    done
+  ) &
+
+set +e
+
+# 2. Luego lanzar el contenedor (bloquea hasta que termina)
+#docker run \
+#  --name "$CONTAINER_NAME" \
+#  --network host \
+#  -e IGNIS_JOB_ID="$JOB_ID" \
+#  -e IGNIS_SCHEDULER_ENV_JOB="$JOB_ID" \
+#  -e IGNIS_SCHEDULER_ENV_CONTAINER="$CONTAINER_NAME" \
+#  -e IGNIS_JOB_DIR="/opt/ignis/jobs/$JOB_ID" \
+#  -e IGNIS_JOB_CONTAINER_DIR="/opt/ignis/jobs/$JOB_ID/tmp/$CONTAINER_NAME" \
+#  -e IGNIS_HOME=/opt/ignis \
+#  -e IGNIS_WDIR="/ignis/dfs/payload" \
+#  -e IGNIS_HEALTHCHECK_URL="http://$DRIVER_IP:2005" \
+#  -e HOST_HOSTNAME="$PRIVATE_IP" \
+#  {{EXECUTOR_ENV}} \
+#  -v /ignis/dfs:/ignis/dfs \
+#  -v "/opt/ignis/jobs/$JOB_ID:/opt/ignis/jobs/$JOB_ID" \
+#  "$IMAGE" {{EXECUTOR_CMD}} > /tmp/executor-container.log 2>&1
+
+docker run --name "$CONTAINER_NAME" --network host -e IGNIS_JOB_ID="$JOB_ID" -e IGNIS_SCHEDULER_ENV_JOB="$JOB_ID" -e IGNIS_SCHEDULER_ENV_CONTAINER="$CONTAINER_NAME" -e IGNIS_JOB_DIR="/opt/ignis/jobs/$JOB_ID" -e IGNIS_JOB_CONTAINER_DIR="/opt/ignis/jobs/$JOB_ID/tmp/$CONTAINER_NAME" -e IGNIS_HOME=/opt/ignis -e IGNIS_WDIR="/ignis/dfs/payload" -e IGNIS_HEALTHCHECK_URL="http://$DRIVER_IP:2005" -e HOST_HOSTNAME="$PRIVATE_IP" {{EXECUTOR_ENV}} -v /ignis/dfs:/ignis/dfs -v "/opt/ignis/jobs/$JOB_ID:/opt/ignis/jobs/$JOB_ID" "$IMAGE" {{EXECUTOR_CMD}} > /tmp/executor-container.log 2>&1
+
+
+CONTAINER_RC=$?
+set -e
+
+echo "[executor] container exited with rc=$CONTAINER_RC"
+
+# Upload logs to S3
+aws --region "$REGION" s3 cp /tmp/executor-container.log \
+  "s3://$BUCKET/jobs/$JOB_ID/executor-logs/$CONTAINER_NAME-container.log" || true
+aws --region "$REGION" s3 cp /var/log/user-data.log \
+  "s3://$BUCKET/jobs/$JOB_ID/executor-logs/$CONTAINER_NAME.log" || true
+
+echo "[executor] shutting down"
+shutdown -h now

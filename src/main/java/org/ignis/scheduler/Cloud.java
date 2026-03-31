@@ -31,6 +31,16 @@ public class Cloud implements IScheduler {
     private final Map<String, IContainerInfo.IStatus> runtimeStatus = new ConcurrentHashMap<>();
     private final String dockerBin = System.getenv().getOrDefault("IGNIS_DOCKER_BIN", "/usr/bin/docker");
 
+    private static final class PendingExecutor {
+        final String containerName;
+        final String instanceId;
+
+        PendingExecutor(String containerName, String instanceId) {
+            this.containerName = containerName;
+            this.instanceId = instanceId;
+        }
+    }
+
     private final static Map<String, IContainerInfo.IStatus> CLOUD_STATUS = new HashMap<>() {
         {
             put("pending", IContainerInfo.IStatus.ACCEPTED);
@@ -47,7 +57,6 @@ public class Cloud implements IScheduler {
         LOGGER.info("Initializing Cloud scheduler at: {}", url);
 
         this.awsFactory = new AwsFactory(resolveRegion());
-
         // Build clients
         Ec2Client ec2Client = awsFactory.createEc2Client();
         S3Client s3Client = awsFactory.createS3Client();
@@ -191,7 +200,7 @@ public class Cloud implements IScheduler {
         return containerName;
     }
 
-    private IContainerInfo buildExecutorContainerInfo(String containerName, String job, IClusterRequest request) {
+    /*private IContainerInfo buildExecutorContainerInfo(String containerName, String job, IClusterRequest request) {
         return IContainerInfo.builder()
                 .id(containerName)
                 .node("localhost")
@@ -215,6 +224,325 @@ public class Cloud implements IScheduler {
                 .provider(IContainerInfo.IProvider.DOCKER)
                 .schedulerOptArgs(Map.of())
                 .build();
+    }*/
+
+    /*private IContainerInfo buildExecutorContainerInfo(String instanceId, String containerName, String privateIp, String job, IClusterRequest request) {
+
+        Map<String, String> env = new HashMap<>(request.resources().env());
+        env.put("IGNIS_SCHEDULER_ENV_JOB", job);
+        env.put("IGNIS_SCHEDULER_ENV_CONTAINER", containerName);
+
+        return IContainerInfo.builder()
+                .id(instanceId)
+                .node(privateIp)
+                .image(request.resources().image())
+                .args(request.resources().args() != null ? request.resources().args() : List.of())
+                .cpus(request.resources().cpus())
+                .gpu(request.resources().gpu())
+                .memory(request.resources().memory())
+                .writable(true)
+                .tmpdir(true)
+                .ports(List.of(new IPortMapping(1963, 1963, IPortMapping.Protocol.TCP)))
+                .binds(List.of())
+                .nodelist(List.of())
+                .hostnames(Map.of(containerName, privateIp))
+                .env(env)
+                .network(IContainerInfo.INetworkMode.HOST)
+                .status(IContainerInfo.IStatus.RUNNING)
+                .provider(IContainerInfo.IProvider.DOCKER)
+                .schedulerOptArgs(Map.of())
+                .build();
+    }*/
+
+    private IContainerInfo buildExecutorContainerInfo(
+            String instanceId,
+            String containerName,
+            ReadyInfo ready,
+            String job,
+            IClusterRequest request
+    ) {
+        Map<String, String> env = new HashMap<>(request.resources().env());
+        env.put("IGNIS_SCHEDULER_ENV_JOB", job);
+        env.put("IGNIS_SCHEDULER_ENV_CONTAINER", containerName);
+
+        return IContainerInfo.builder()
+                .id(instanceId)
+                .node(ready.ip)
+                .image(request.resources().image())
+                .args(request.resources().args() != null ? request.resources().args() : List.of())
+                .cpus(request.resources().cpus())
+                .gpu(request.resources().gpu())
+                .memory(request.resources().memory())
+                .writable(true)
+                .tmpdir(true)
+                .ports(List.of(new IPortMapping(ready.port, ready.port, IPortMapping.Protocol.TCP)))
+                .binds(List.of())
+                .nodelist(List.of())
+                .hostnames(Map.of(containerName, ready.ip))
+                .env(env)
+                .network(IContainerInfo.INetworkMode.HOST)
+                .status(IContainerInfo.IStatus.RUNNING)
+                .provider(IContainerInfo.IProvider.DOCKER)
+                .schedulerOptArgs(Map.of())
+                .build();
+    }
+
+    private IContainerInfo buildExecutorContainerInfoFromMeta(
+            String instanceId,
+            String containerName,
+            ReadyInfo ready,
+            String job,
+            JobMeta meta
+    ) {
+        Map<String, String> env = new HashMap<>();
+        env.put("IGNIS_SCHEDULER_ENV_JOB", job);
+        env.put("IGNIS_SCHEDULER_ENV_CONTAINER", containerName);
+
+        return IContainerInfo.builder()
+                .id(instanceId)
+                .node(ready.ip)
+                .image(meta.image())
+                .args(meta.args() != null ? meta.args() : List.of())
+                .cpus(meta.cpus())
+                .gpu(meta.gpu())
+                .memory(meta.memory())
+                .writable(true)
+                .tmpdir(true)
+                .ports(List.of(new IPortMapping(ready.port, ready.port, IPortMapping.Protocol.TCP)))
+                .binds(List.of())
+                .nodelist(List.of())
+                .hostnames(Map.of(containerName, ready.ip))
+                .env(env)
+                .network(IContainerInfo.INetworkMode.HOST)
+                .status(IContainerInfo.IStatus.RUNNING)
+                .provider(IContainerInfo.IProvider.DOCKER)
+                .schedulerOptArgs(Map.of())
+                .build();
+    }
+
+    private ReadyInfo loadExecutorReadyIfPresent(JobMeta meta, String containerName) throws ISchedulerException {
+        if (meta == null) return null;
+
+        String key = "jobs/" + meta.jobId() + "/ready/" + containerName + ".json";
+        String failedKey = "jobs/" + meta.jobId() + "/ready/" + containerName + ".failed.json";
+
+        String failedJson = s3.getString(meta.bucket(), failedKey);
+        if (failedJson != null && !failedJson.isBlank()) {
+            throw new ISchedulerException("Executor " + containerName + " reported failure: " + failedJson);
+        }
+
+        String json = s3.getString(meta.bucket(), key);
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+
+        try {
+            ReadyInfo ready = mapper.readValue(json, ReadyInfo.class);
+            if (ready != null && ready.isValid()) {
+                return ready;
+            }
+            LOGGER.warn("Executor {} ready file exists but is invalid: {}", containerName, json);
+            return null;
+        } catch (Exception e) {
+            throw new ISchedulerException("Failed to parse ready file for executor " + containerName, e);
+        }
+    }
+
+    private List<String> normalizeExecutorArgs(List<String> args) {
+        List<String> executorArgs = new ArrayList<>(args != null ? args : List.of());
+
+        if (executorArgs.size() >= 3
+                && "ignis-sshserver".equals(executorArgs.get(0))
+                && "executor".equals(executorArgs.get(1))) {
+            executorArgs.set(2, "0");
+        }
+
+        return executorArgs;
+    }
+
+    private int resolvePrelaunchExecutors(IClusterRequest... executors) throws ISchedulerException {
+        if (executors != null && executors.length > 0) {
+            return Arrays.stream(executors)
+                    .filter(Objects::nonNull)
+                    .mapToInt(IClusterRequest::instances)
+                    .sum();
+        }
+
+        String raw = System.getenv("IGNIS_PRELAUNCH_EXECUTORS");
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return Math.max(value, 0);
+        } catch (NumberFormatException e) {
+            throw new ISchedulerException("Invalid IGNIS_PRELAUNCH_EXECUTORS='" + raw + "'", e);
+        }
+    }
+
+    private List<String> prelaunchExecutorArgs() {
+        return List.of("ignis-sshserver", "executor", "0");
+    }
+
+    private String waitForDriverIp(JobMeta meta) throws ISchedulerException {
+        String key = "jobs/" + meta.jobId() + "/driver-ip.txt";
+        long deadline = System.currentTimeMillis() + (6 * 60 * 1000);
+
+        while (System.currentTimeMillis() < deadline) {
+            String driverIp = s3.getString(meta.bucket(), key);
+            if (driverIp != null && !driverIp.isBlank()) {
+                return driverIp.trim();
+            }
+
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ISchedulerException("Interrupted while waiting for driver-ip.txt of job " + meta.jobId(), e);
+            }
+        }
+
+        throw new ISchedulerException("Timeout waiting for s3://" + meta.bucket() + "/" + key);
+    }
+
+    private String findInstanceIdByName(List<Instance> instances, String containerName) {
+        if (instances == null || instances.isEmpty()) {
+            return null;
+        }
+
+        for (Instance inst : instances) {
+            String name = inst.tags().stream()
+                    .filter(t -> "Name".equals(t.key()))
+                    .map(Tag::value)
+                    .findFirst()
+                    .orElse(null);
+            if (containerName.equals(name)) {
+                return inst.instanceId();
+            }
+        }
+        return null;
+    }
+
+    private void prelaunchExecutors(JobMeta meta, IClusterRequest baseRequest, int totalExecutors) throws ISchedulerException {
+        if (totalExecutors <= 0) {
+            return;
+        }
+
+        String region = awsFactory.getRegion().id();
+        String subnet = System.getenv("IGNIS_SUBNET_ID");
+        String sg = System.getenv("IGNIS_SG_ID");
+        String ami = System.getenv("IGNIS_AMI");
+        String instanceTypeStr = System.getenv("IGNIS_INSTANCE_TYPE");
+
+        InstanceType instanceType = null;
+        if (instanceTypeStr != null && !instanceTypeStr.isBlank()) {
+            String parsed = instanceTypeStr.toLowerCase().replaceAll("_", ".");
+            instanceType = InstanceType.fromValue(parsed);
+        }
+
+        if (subnet == null || sg == null || ami == null || instanceType == null) {
+            subnet = terraformManager.requireOutput("subnet_id");
+            sg = terraformManager.requireOutput("sg_id");
+            ami = ec2.resolveAMI();
+            instanceType = ec2.resolveInstanceType(baseRequest);
+        }
+
+        Map<String, String> executorEnv = new HashMap<>();
+        if (baseRequest != null && baseRequest.resources() != null && baseRequest.resources().env() != null) {
+            executorEnv.putAll(baseRequest.resources().env());
+        }
+
+        List<Instance> existing = ec2.describeInstancesByTag(meta.jobId());
+        var pending = new ArrayList<PendingExecutor>();
+
+        for (int i = 0; i < totalExecutors; i++) {
+            String containerName = meta.jobId() + "-executor-" + i;
+            String existingId = findInstanceIdByName(existing, containerName);
+            if (existingId != null) {
+                System.out.println("[ignis-cloud] PRELAUNCH REUSE executor " + containerName + " instanceId=" + existingId);
+                pending.add(new PendingExecutor(containerName, existingId));
+                continue;
+            }
+
+            String userData = userDataBuilder.buildExecutorUserData(
+                    region,
+                    meta.jobId(),
+                    containerName,
+                    meta.bucket(),
+                    meta.bundleKey(),
+                    meta.image(),
+                    executorEnv,
+                    prelaunchExecutorArgs()
+            );
+
+            String instanceId = ec2.createEC2Instance(
+                    containerName,
+                    userData,
+                    ami,
+                    subnet,
+                    sg,
+                    "",
+                    instanceType,
+                    "",
+                    meta.jobId()
+            );
+
+            System.out.println("[ignis-cloud] PRELAUNCH REQUEST executor " + containerName + " instanceId=" + instanceId);
+            pending.add(new PendingExecutor(containerName, instanceId));
+        }
+
+        for (PendingExecutor p : pending) {
+            ec2.waitUntilRunning(p.instanceId);
+            String privateIp = ec2.waitForPrivateIp(p.instanceId);
+            System.out.println("[ignis-cloud] PRELAUNCH RUNNING executor " + p.containerName + " ec2Ip=" + privateIp);
+            ReadyInfo ready = waitForExecutorReady(meta, p.containerName);
+            System.out.println("[ignis-cloud] PRELAUNCH READY executor " + p.containerName + " -> " + ready.ip + ":" + ready.port);
+        }
+    }
+
+    private ReadyInfo waitForExecutorReady(JobMeta meta, String containerName) throws ISchedulerException {
+        String key = "jobs/" + meta.jobId() + "/ready/" + containerName + ".json";
+        String failedKey = "jobs/" + meta.jobId() + "/ready/" + containerName + ".failed.json";
+
+        long deadline = System.currentTimeMillis() + (6 * 60 * 1000); // 6 min
+        Exception lastError = null;
+
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                String failedJson = s3.getString(meta.bucket(), failedKey);
+                if (failedJson != null && !failedJson.isBlank()) {
+                    throw new ISchedulerException("Executor " + containerName + " reported failure: " + failedJson);
+                }
+
+                String json = s3.getString(meta.bucket(), key);
+                if (json != null && !json.isBlank()) {
+                    ReadyInfo ready = mapper.readValue(json, ReadyInfo.class);
+                    if (ready != null && ready.isValid()) {
+                        LOGGER.info("Executor {} ready from S3: {}", containerName, ready);
+                        return ready;
+                    }
+                    LOGGER.warn("Executor {} ready file exists but is invalid: {}", containerName, json);
+                }
+            } catch (ISchedulerException e) {
+                throw e;
+            } catch (Exception e) {
+                lastError = e;
+                LOGGER.debug("Waiting for ready file of {} at s3://{}/{}", containerName, meta.bucket(), key, e);
+            }
+
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ISchedulerException("Interrupted while waiting for ready file of " + containerName, e);
+            }
+        }
+
+        throw new ISchedulerException(
+                "Timeout waiting for executor ready file: s3://" + meta.bucket() + "/" + key,
+                lastError
+        );
     }
 
     private IContainerInfo.IStatus statusFromS3(JobMeta meta) {
@@ -269,18 +597,17 @@ public class Cloud implements IScheduler {
 
         String subnet = terraformManager.requireOutput("subnet_id");
         String sg = terraformManager.requireOutput("sg_id");
-        String iamRoleArn=""; // TODO: comprobar si con la cuenta AWS Academy puedo usar roles IAM: Antes tenía esto: //String iamRoleArn = terraformManager.requireOutput("iam_role_arn"); & //String iamInstanceProfile = terraformManager.requireOutput("aws_iam_instance_profile");
+        String iamRoleArn = "";
         String bucket = terraformManager.requireOutput("jobs_bucket_name");
 
-        String iamInstanceProfile = System.getenv("IGNIS_IAM_INSTANCE_PROFILE"); //TODO: estoy usando por defecto: -p ignis.submitter.env.IGNIS_IAM_INSTANCE_PROFILE=EMR_EC2_DefaultRole
+        String iamInstanceProfile = System.getenv("IGNIS_IAM_INSTANCE_PROFILE");
         if (iamInstanceProfile == null || iamInstanceProfile.isBlank()) {
             throw new ISchedulerException("Missing IGNIS_IAM_INSTANCE_PROFILE (IAM creation disabled in this AWS account)");
         }
-        if(subnet == null || sg == null || bucket == null) {
+        if (subnet == null || sg == null || bucket == null) {
             throw new ISchedulerException("Terraform outputs not found");
         }
 
-        // Prepare Payload
         String bundleKey;
         try {
             List<IBindMount> binds = new ArrayList<>(payloadResolver.buildPayloadBindsFromArgs(driver));
@@ -290,23 +617,54 @@ public class Cloud implements IScheduler {
             throw new ISchedulerException("Failed to prepare job payload for job " + jobId, e);
         }
 
-        // Launch EC2 instance
-        String instanceId, cmd;
+        String instanceId;
+        String cmd;
         try {
             String image = driver.resources().image();
             cmd = payloadResolver.resolveCommand(driver);
-            String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(), finalJobName, jobId, bucket, bundleKey, image, cmd);
+            String ami = ec2.resolveAMI();
             InstanceType instanceType = ec2.resolveInstanceType(driver);
-            instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, ec2.resolveAMI(), subnet, sg, iamRoleArn, instanceType, iamInstanceProfile);
+
+            String userData = userDataBuilder.buildUserData(
+                    awsFactory.getRegion().id(),
+                    finalJobName,
+                    jobId,
+                    bucket,
+                    bundleKey,
+                    image,
+                    cmd,
+                    subnet,
+                    sg,
+                    instanceType.name(),
+                    ami
+            );
+            instanceId = ec2.createEC2Instance(
+                    finalJobName + "-driver",
+                    userData,
+                    ami,
+                    subnet,
+                    sg,
+                    iamRoleArn,
+                    instanceType,
+                    iamInstanceProfile
+            );
         } catch (Exception e) {
             throw new ISchedulerException("Failed to launch EC2 instance for job " + jobId, e);
         }
 
-        // Save metadata
-        JobMeta meta = new JobMeta(jobId, finalJobName, bucket, instanceId,
-                driver.resources().image(), cmd,
-                driver.resources().cpus(), driver.resources().memory(),
-                driver.resources().gpu(), driver.resources().args());
+        JobMeta meta = new JobMeta(
+                jobId,
+                finalJobName,
+                bucket,
+                instanceId,
+                bundleKey,
+                driver.resources().image(),
+                cmd,
+                driver.resources().cpus(),
+                driver.resources().memory(),
+                driver.resources().gpu(),
+                driver.resources().args()
+        );
         jobs.put(jobId, meta);
         try {
             s3.saveJobMetaToS3(meta);
@@ -314,50 +672,23 @@ public class Cloud implements IScheduler {
             LOGGER.warn("Failed to save job meta to S3 for job {}, continuing", jobId, e);
         }
 
-        // Wait for results and download
-        // TODO: esta es la espera activa (si no convence puede obviarse, pero me permite descargarle al usuario los ficheros)
-        long maxWaitMs = 10 * 60 * 1000; // 10 mins
-        long start = System.currentTimeMillis();
+        int prelaunchExecutors = resolvePrelaunchExecutors(executors);
+        if (prelaunchExecutors > 0) {
+            System.out.println("[ignis-cloud] PRELAUNCH enabled with " + prelaunchExecutors + " executor(s)");
+            String driverIp = waitForDriverIp(meta);
+            System.out.println("[ignis-cloud] PRELAUNCH driver IP detected: " + driverIp);
 
-        System.out.println("[ignis-cloud] Job running...");
-        while (true) {
-            IContainerInfo.IStatus status = statusFromS3(meta);
-
-            if (status == IContainerInfo.IStatus.FINISHED) {
-                System.out.println("[ignis-cloud] Job completed. Downloading results...");
-                try{
-                    s3.downloadJob(jobId, bucket);
-                    System.out.println("[ignis-cloud] Results downloaded successfully.");
-                } catch (Exception e) {
-                    LOGGER.warn("Failed to download results for job {}", jobId, e);
-                    System.out.println("[ignis-cloud] Warning: could not download results. Available at: s3://" + bucket + "/jobs/" + jobId + "/results/");
-                }
-                System.out.println("[ignis-cloud] Cleaning up infrastructure...");
-                cleanupInfrastructure(bucket);
-                System.out.println("[ignis-cloud] Infrastructure cleaned up.");
-                break;
-
-            } else if (status == IContainerInfo.IStatus.ERROR || status == IContainerInfo.IStatus.DESTROYED) {
-                System.out.println("\n[ignis-cloud] Job failed with status: " + status);
-                LOGGER.error("Job {} failed with status {}", jobId, status);
-                cleanupInfrastructure(bucket);
-                break;
-            }
-            // TIMEOUT CHECK
-            if (System.currentTimeMillis() - start > maxWaitMs) {
-                System.out.println("\n[ignis-cloud] Timeout reached. Results at: s3://" + bucket + "/jobs/" + jobId + "/");
-                cleanupInfrastructure(bucket);
-                break;
-            }
-            try{
-                Thread.sleep(1000);
-            } catch(Exception e){
-                Thread.currentThread().interrupt();
-                LOGGER.warn("Interrupted while waiting for job {}", jobId);
-                break;
-            }
-
+            IClusterRequest prelaunchSpec = (executors != null && executors.length > 0 && executors[0] != null)
+                    ? executors[0]
+                    : driver;
+            prelaunchExecutors(meta, prelaunchSpec, prelaunchExecutors);
+        } else {
+            System.out.println("[ignis-cloud] PRELAUNCH disabled (set IGNIS_PRELAUNCH_EXECUTORS to enable it)");
         }
+
+        System.out.println("[ignis-cloud] Driver lanzado correctamente. Job ID: " + jobId);
+        System.out.println("[ignis-cloud] Esperando a que el framework llame a createCluster() para los executors...");
+
         LOGGER.info("Created job with name {} and id {}", finalJobName, jobId);
         return jobId;
     }
@@ -385,8 +716,8 @@ public class Cloud implements IScheduler {
         try{
             String instanceId = meta.instanceId();
             if(instanceId != null && !instanceId.isBlank()) {
-                    ec2.terminateInstance(instanceId);
-                    LOGGER.info("EC2 instance {} terminated for job {}", instanceId, id);
+                ec2.terminateInstance(instanceId);
+                LOGGER.info("EC2 instance {} terminated for job {}", instanceId, id);
             }
         }catch(Exception e){
             throw new ISchedulerException("Error terminating EC2 instance for job " + id, e);
@@ -396,7 +727,7 @@ public class Cloud implements IScheduler {
 
         boolean isRuntime = Boolean.parseBoolean(System.getenv("IGNIS_CLOUD_RUNTIME"));
         if (!isRuntime) {
-            cleanupInfrastructure(meta.bucket());
+            //cleanupInfrastructure(meta.bucket());
         } else {
             LOGGER.info("Runtime mode: skipping infrastructure cleanup for job {}", id);
         }
@@ -463,7 +794,7 @@ public class Cloud implements IScheduler {
                     .clusters(List.of(cluster))
                     .build();
         } catch (Exception e) {
-                throw new ISchedulerException("Error getting job " + id + ": " + e.getMessage(), e);
+            throw new ISchedulerException("Error getting job " + id + ": " + e.getMessage(), e);
         }
     }
 
@@ -475,46 +806,94 @@ public class Cloud implements IScheduler {
     @Override
     public IClusterInfo createCluster(String job, IClusterRequest request) throws ISchedulerException {
         LOGGER.info("createCluster job {} instances={}", job, request.instances());
+        System.out.println("[ignis-cloud] ENTER createCluster job=" + job + " instances=" + request.instances());
 
-        int instances = request.instances();
-        var containerIds = new ArrayList<String>();
-
-        // Lanzar executors
-        for (int i = 0; i < instances; i++) {
-            String containerName = launchExecutor(job, i, request);
-            containerIds.add(containerName);
+        JobMeta meta = resolveJobMeta(job);
+        if (meta == null) {
+            throw new ISchedulerException("Cannot create cluster: job meta not found for " + job);
         }
 
-        // Esperar a que el executor esté listo en el puerto 1963
-        int maxWait = 30;
-        boolean ready = false;
-        for (int attempt = 0; attempt < maxWait; attempt++) {
-            try (var socket = new Socket("localhost", 1963)) {
-                ready = true;
-                break;
-            } catch (Exception e) {
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e1) {
-                    Thread.currentThread().interrupt();
-                    throw new ISchedulerException("Interrupted while waiting for executor port", e1);
-                }
-            }
+        String region = awsFactory.getRegion().id();
+        String subnet = System.getenv("IGNIS_SUBNET_ID");
+        String sg = System.getenv("IGNIS_SG_ID");
+        String ami = System.getenv("IGNIS_AMI");
+        String instanceTypeStr = System.getenv("IGNIS_INSTANCE_TYPE");
+
+        InstanceType instanceType = null;
+        if (instanceTypeStr != null && !instanceTypeStr.isBlank()) {
+            String parsed = instanceTypeStr.toLowerCase().replaceAll("_", ".");
+            instanceType = InstanceType.fromValue(parsed);
         }
 
-        if (!ready) {
-            throw new ISchedulerException("Executor never became ready on port 1963 after " + maxWait + " seconds");
+        if (subnet == null || sg == null || ami == null || instanceType == null) {
+            subnet = terraformManager.requireOutput("subnet_id");
+            sg = terraformManager.requireOutput("sg_id");
+            ami = ec2.resolveAMI();
+            instanceType = ec2.resolveInstanceType(request);
         }
 
-        // Construir lista de containers
+        List<Instance> existing = ec2.describeInstancesByTag(job);
+        var pending = new ArrayList<PendingExecutor>();
         var containers = new ArrayList<IContainerInfo>();
-        for (int i = 0; i < containerIds.size(); i++) {
-            containers.add(buildExecutorContainerInfo(containerIds.get(i), job, request));
+
+        for (int i = 0; i < request.instances(); i++) {
+            String containerName = job + "-executor-" + i;
+            String existingId = findInstanceIdByName(existing, containerName);
+            if (existingId != null) {
+                System.out.println("[ignis-cloud] REUSE executor " + containerName + " instanceId=" + existingId);
+                pending.add(new PendingExecutor(containerName, existingId));
+                continue;
+            }
+
+            List<String> executorArgs = normalizeExecutorArgs(request.resources().args());
+            String userData = userDataBuilder.buildExecutorUserData(
+                    region,
+                    job,
+                    containerName,
+                    meta.bucket(),
+                    meta.bundleKey(),
+                    meta.image(),
+                    request.resources().env(),
+                    executorArgs
+            );
+
+            String instanceId = ec2.createEC2Instance(
+                    containerName,
+                    userData,
+                    ami,
+                    subnet,
+                    sg,
+                    "",
+                    instanceType,
+                    "",
+                    job
+            );
+
+            System.out.println("[ignis-cloud] REQUEST executor " + containerName + " instanceId=" + instanceId);
+            pending.add(new PendingExecutor(containerName, instanceId));
         }
 
+        for (PendingExecutor p : pending) {
+            ec2.waitUntilRunning(p.instanceId);
+            String privateIp = ec2.waitForPrivateIp(p.instanceId);
+            System.out.println("[ignis-cloud] RUNNING executor " + p.containerName + " ec2Ip=" + privateIp);
+            System.out.println("[ignis-cloud] WAIT READY " + p.containerName);
+            ReadyInfo ready = waitForExecutorReady(meta, p.containerName);
+            System.out.println("[ignis-cloud] READY OK " + p.containerName + " -> " + ready.ip + ":" + ready.port);
+
+            containers.add(buildExecutorContainerInfo(
+                    p.instanceId,
+                    p.containerName,
+                    ready,
+                    job,
+                    request
+            ));
+        }
+
+        System.out.println("[ignis-cloud] RETURN createCluster job=" + job);
         return IClusterInfo.builder()
                 .id(request.name())
-                .instances(instances)
+                .instances(request.instances())
                 .containers(containers)
                 .build();
     }
@@ -522,30 +901,7 @@ public class Cloud implements IScheduler {
     @Override
     public void destroyCluster(String job, String id) throws ISchedulerException {
         LOGGER.info("Destroying cluster {} for job {}", id, job);
-        try{ // List executor containers
-            ProcessBuilder pb = new ProcessBuilder(dockerBin, "ps", "-q", "--filter", "name=" + job + "-executor");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            String output = new String(p.getInputStream().readAllBytes()).trim();
-
-            if(output.isEmpty()){
-                LOGGER.info("No executor containers found for job {}", job);
-                return;
-            }
-
-            for(String containerId: output.split("\n")){
-                if(containerId.isBlank()) continue;
-                try{
-                    new ProcessBuilder(dockerBin, "stop", containerId.trim()).start().waitFor();
-                    LOGGER.info("Executor container {} stopped", containerId);
-                }catch(Exception e){
-                    LOGGER.warn("Failed to stop executor container {}: {}", containerId.trim(), e.getMessage());
-                }
-            }
-
-        } catch (Exception e) {
-            throw new ISchedulerException("Failed to destroy cluster " + id + " for job " + job, e);
-        }
+        ec2.terminateInstancesByTag(job);
     }
 
     @Override
@@ -553,72 +909,85 @@ public class Cloud implements IScheduler {
         LOGGER.info("Getting cluster {} for job {}", id, job);
 
         JobMeta meta = resolveJobMeta(job);
-        if(meta == null){
-            LOGGER.warn("No job metadata found for job {}", job);
-        }
 
-        try{
-            ProcessBuilder pb = new  ProcessBuilder(dockerBin, "ps", "-a", "--filter", "name=" + job + "-executor", "--format", "{{.Names}}");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            String output = new String(p.getInputStream().readAllBytes()).trim();
-            p.waitFor();
+        try {
+            List<Instance> instances = ec2.describeInstancesByTag(job);
+            var containers = new ArrayList<IContainerInfo>();
 
-            var containers  = new ArrayList<IContainerInfo>();
+            for (var inst : instances) {
+                String instanceId = inst.instanceId();
+                String privateIp = inst.privateIpAddress() != null ? inst.privateIpAddress() : "";
+                String containerName = inst.tags().stream()
+                        .filter(t -> "Name".equals(t.key()))
+                        .map(Tag::value)
+                        .findFirst().orElse(instanceId);
 
-            if (!output.isEmpty()) {
-                for (String containerName : output.split("\n")) {
-                    if (containerName.isBlank()) continue;
-                    containerName = containerName.trim();
+                IContainerInfo.IStatus status = CLOUD_STATUS.getOrDefault(
+                        inst.state().nameAsString().toLowerCase(),
+                        IContainerInfo.IStatus.UNKNOWN);
 
-                    IContainerInfo.IStatus status = getContainerStatus(job, containerName);
-
-                    var builder = IContainerInfo.builder()
-                            .id(containerName)
-                            .node("localhost")
-                            .writable(true)
-                            .tmpdir(true)
-                            .ports(List.of())
-                            .binds(List.of())
-                            .nodelist(List.of())
-                            .hostnames(Map.of())
-                            .env(Map.of(
-                                    "IGNIS_SCHEDULER_ENV_JOB", job,
-                                    "IGNIS_SCHEDULER_ENV_CONTAINER", containerName
-                            ))
-                            .network(IContainerInfo.INetworkMode.BRIDGE)
-                            .status(status)
-                            .provider(IContainerInfo.IProvider.DOCKER)
-                            .schedulerOptArgs(Map.of());
-
-                    if (meta != null) {
-                        builder.image(meta.image())
-                                .cpus(meta.cpus())
-                                .memory(meta.memory())
-                                .gpu(meta.gpu())
-                                .args(meta.args() != null ? meta.args() : List.of());
-                    } else {
-                        builder.image("")
-                                .cpus(1)
-                                .memory(0L)
-                                .gpu(null)
-                                .args(List.of());
+                ReadyInfo ready = null;
+                if (meta != null && status == IContainerInfo.IStatus.RUNNING) {
+                    try {
+                        ready = loadExecutorReadyIfPresent(meta, containerName);
+                    } catch (Exception e) {
+                        LOGGER.warn("Could not resolve ready info for executor {}", containerName, e);
                     }
-
-                    containers.add(builder.build());
                 }
+
+                if (meta != null && ready != null) {
+                    containers.add(buildExecutorContainerInfoFromMeta(
+                            instanceId,
+                            containerName,
+                            ready,
+                            job,
+                            meta
+                    ));
+                    continue;
+                }
+
+                var builder = IContainerInfo.builder()
+                        .id(instanceId)
+                        .node(privateIp)
+                        .writable(true)
+                        .tmpdir(true)
+                        .ports(List.of())
+                        .binds(List.of())
+                        .nodelist(List.of())
+                        .hostnames(Map.of())
+                        .env(Map.of(
+                                "IGNIS_SCHEDULER_ENV_JOB", job,
+                                "IGNIS_SCHEDULER_ENV_CONTAINER", containerName
+                        ))
+                        .network(IContainerInfo.INetworkMode.BRIDGE)
+                        .status(status)
+                        .provider(IContainerInfo.IProvider.DOCKER)
+                        .schedulerOptArgs(Map.of());
+
+                if (meta != null) {
+                    builder.image(meta.image())
+                            .cpus(meta.cpus())
+                            .memory(meta.memory())
+                            .gpu(meta.gpu())
+                            .args(meta.args() != null ? meta.args() : List.of());
+                } else {
+                    builder.image("").cpus(1).memory(0L).gpu(null).args(List.of());
+                }
+
+                containers.add(builder.build());
             }
 
             if (containers.isEmpty()) {
                 LOGGER.warn("No executor containers found for cluster {} job {}", id, job);
             }
+
             return IClusterInfo.builder()
                     .id(id)
                     .instances(containers.size())
                     .containers(containers)
                     .build();
 
-        }catch (Exception e) {
+        } catch (Exception e) {
             throw new ISchedulerException("Failed to get cluster " + id + " for job " + job, e);
         }
     }
@@ -627,38 +996,76 @@ public class Cloud implements IScheduler {
     public IClusterInfo repairCluster(String job, IClusterInfo cluster, IClusterRequest request) throws ISchedulerException {
         LOGGER.info("Repairing cluster {} for job {}", cluster.id(), job);
 
+        JobMeta meta = resolveJobMeta(job);
+        if (meta == null) {
+            throw new ISchedulerException("Cannot repair cluster: job meta not found for " + job);
+        }
+
+        String subnet = System.getenv("IGNIS_SUBNET_ID");
+        String sg = System.getenv("IGNIS_SG_ID");
+        if (subnet == null || sg == null) {
+            subnet = terraformManager.requireOutput("subnet_id");
+            sg = terraformManager.requireOutput("sg_id");
+        }
+
+        String region = awsFactory.getRegion().id();
+
         var newContainers = new ArrayList<IContainerInfo>(cluster.containers());
         boolean repaired = false;
 
         for (int i = 0; i < cluster.containers().size(); i++) {
             IContainerInfo container = cluster.containers().get(i);
-            IContainerInfo.IStatus status = getContainerStatus(job, container.id());
 
+            IContainerInfo.IStatus status = getContainerStatus(job, container.id());
             if (status == IContainerInfo.IStatus.RUNNING) {
-                LOGGER.debug("Container {} is healthy, skipping", container.id());
+                LOGGER.debug("Executor {} is healthy, skipping", container.id());
                 continue;
             }
 
-            LOGGER.warn("Container {} is not running (status: {}), attempting repair", container.id(), status);
+            LOGGER.warn("Executor {} is not running (status={}), relaunching", container.id(), status);
 
-            // Eliminar contenedor si existe
             try {
-                new ProcessBuilder(dockerBin, "rm", "-f", container.id())
-                        .start().waitFor();
+                ec2.terminateInstance(container.id());
             } catch (Exception e) {
-                LOGGER.warn("Failed to remove container {}: {}", container.id(), e.getMessage());
+                LOGGER.warn("Could not terminate instance {}: {}", container.id(), e.getMessage());
             }
 
-            // Relanzar y actualizar
-            String containerName = launchExecutor(job, i, request);
-            newContainers.set(i, buildExecutorContainerInfo(containerName, job, request));
+            String containerName = job + "-executor-" + i;
+            List<String> executorArgs = normalizeExecutorArgs(request.resources().args());
 
+            String userData = userDataBuilder.buildExecutorUserData(
+                    region,
+                    job,
+                    containerName,
+                    meta.bucket(),
+                    meta.bundleKey(),
+                    meta.image(),
+                    request.resources().env(),
+                    executorArgs
+            );
+
+            InstanceType instanceType = ec2.resolveInstanceType(request);
+            String newInstanceId = ec2.createEC2Instance(
+                    containerName, userData, ec2.resolveAMI(),
+                    subnet, sg, "", instanceType, "", job
+            );
+
+            ec2.waitUntilRunning(newInstanceId);
+            String privateIp = ec2.waitForPrivateIp(newInstanceId);
+
+            LOGGER.warn("WAITING READY JSON for repaired executor {} job {}", containerName, job);
+            ReadyInfo ready = waitForExecutorReady(meta, containerName);
+            LOGGER.warn("READY JSON OK for repaired executor {} -> {}:{}", containerName, ready.ip, ready.port);
+
+            LOGGER.info("Repaired executor {}: newInstanceId={} ec2Ip={} readyIp={} readyPort={}",
+                    containerName, newInstanceId, privateIp, ready.ip, ready.port);
+
+            newContainers.set(i, buildExecutorContainerInfo(newInstanceId, containerName, ready, job, request));
             repaired = true;
-            LOGGER.info("Successfully repaired executor container {}", containerName);
         }
 
         if (!repaired) {
-            LOGGER.info("No containers needed repair for cluster {} job {}", cluster.id(), job);
+            LOGGER.info("No executors needed repair for cluster {} job {}", cluster.id(), job);
             return cluster;
         }
 
@@ -673,28 +1080,6 @@ public class Cloud implements IScheduler {
     public IContainerInfo.IStatus getContainerStatus(String job, String id) throws ISchedulerException {
         if(id == null || id.isBlank()) {
             throw new ISchedulerException("Container id cannot be null or empty");
-        }
-        // Docker container (EC2 executor)
-        if(!id.startsWith("i-")) {
-            try{
-                ProcessBuilder pb = new ProcessBuilder(dockerBin, "inspect", "--format", "{{.State.Status}}", id);
-                pb.redirectErrorStream(true);
-                Process p = pb.start();
-                String output = new String(p.getInputStream().readAllBytes()).trim();
-                p.waitFor();
-
-                LOGGER.debug("Container {} status: {}", id, output);
-                return switch (output) {
-                    case "created", "restarting" -> IContainerInfo.IStatus.ACCEPTED;
-                    case "running" -> IContainerInfo.IStatus.RUNNING;
-                    case "exited"  -> IContainerInfo.IStatus.FINISHED;
-                    case "dead"    -> IContainerInfo.IStatus.ERROR;
-                    default -> IContainerInfo.IStatus.UNKNOWN;
-                };
-            } catch(Exception e){
-                LOGGER.warn("Failed to get status for container {}: {}", id, e.getMessage());
-                return IContainerInfo.IStatus.UNKNOWN;
-            }
         }
 
         // EC2 instance
@@ -714,25 +1099,6 @@ public class Cloud implements IScheduler {
     @Override
     public void healthCheck() throws ISchedulerException {
         LOGGER.info("Performing health check for Cloud scheduler");
-
-        // Check if Docker is available
-        boolean isRuntime = Boolean.parseBoolean(System.getenv("IGNIS_CLOUD_RUNTIME"));
-        if(isRuntime){
-            try{
-                ProcessBuilder pb = new ProcessBuilder(dockerBin, "info");
-                pb.redirectErrorStream(true);
-                Process p = pb.start();
-                int rc = p.waitFor();
-                if (rc != 0) {
-                    throw new ISchedulerException("Docker is not available: " + new String(p.getInputStream().readAllBytes()));
-                }
-                LOGGER.debug("Docker health check passed");
-            } catch(ISchedulerException e){
-                throw e;
-            } catch(Exception e){
-                throw new ISchedulerException("Failed to check Docker availability", e);
-            }
-        }
 
         // Verify AWS conectivity
         try {

@@ -77,6 +77,46 @@ resource "aws_security_group" "ignis_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "Allow all traffic inside the Ignis cluster"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    self        = true
+  }
+
+  ingress {
+    description = "Ignis executor RPC"
+    from_port   = 1963
+    to_port     = 1963
+    protocol    = "tcp"
+    self        = true
+  }
+  #
+  ingress {
+    description = "Ignis healthcheck driver RPC"
+    from_port   = 2005
+    to_port     = 2005
+    protocol    = "tcp"
+    self        = true
+  }
+
+  ingress {
+    description = "Allow all TCP UDP inside cluster "
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    self        = true
+  }
+
+  ingress {
+    description = "Allow all TCP UDP inside cluster "
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "udp"
+    self        = true
+  }
+
   tags = {
     Name = "ignis-sg"
   }
