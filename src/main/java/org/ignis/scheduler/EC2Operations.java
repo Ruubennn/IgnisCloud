@@ -165,6 +165,26 @@ public class EC2Operations implements Closeable {
         String userAMI = System.getenv("IGNIS_AMI");
         if(userAMI != null && !userAMI.isBlank()) return userAMI.trim();
 
+        try{
+            DescribeImagesRequest request = DescribeImagesRequest.builder()
+                    .owners("self")
+                    .filters(Filter.builder()
+                            .name("name")
+                            .values("ami-ignis-optimized-*")
+                            .build())
+                    .build();
+
+            var response = ec2.describeImages(request);
+            if(!response.images().isEmpty()){
+                String customAmi = response.images().get(0).imageId();
+                System.out.println(String.format("Custom AMI: %s", customAmi));
+                LOGGER.info("Optimización detectada: Usando AMI personalizada {}", customAmi);
+                return customAmi;
+            }
+        } catch (Exception e) {
+            LOGGER.warn("No se pudo buscar la AMI personalizada: {}. Usando fallback...", e.getMessage());
+        }
+
         String paramName = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64";
 
         try{

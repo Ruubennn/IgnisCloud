@@ -291,13 +291,14 @@ public class Cloud implements IScheduler {
         }
 
         // Launch EC2 instance
-        String instanceId, cmd;
+        String instanceId, cmd, ami;
         try {
             String image = driver.resources().image();
+            ami = ec2.resolveAMI();
             cmd = payloadResolver.resolveCommand(driver);
             String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(), finalJobName, jobId, bucket, bundleKey, image, cmd);
             InstanceType instanceType = ec2.resolveInstanceType(driver);
-            instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, ec2.resolveAMI(), subnet, sg, iamRoleArn, instanceType, iamInstanceProfile);
+            instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, ami, subnet, sg, iamRoleArn, instanceType, iamInstanceProfile);
         } catch (Exception e) {
             throw new ISchedulerException("Failed to launch EC2 instance for job " + jobId, e);
         }

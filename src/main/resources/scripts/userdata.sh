@@ -1,31 +1,44 @@
 #!/bin/bash
 set -euo pipefail
 
+# Redirigir salida a log para debug
 exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
 
 echo "[user-data] starting..."
+export IMAGE='{{IMAGE}}'
 
-# Dependencies installation
-if grep -qi "Amazon Linux" /etc/os-release; then
-  echo "[user-data] detected Amazon Linux"
-  dnf -y makecache
-  dnf -y update
-  dnf -y swap curl-minimal curl-full --allowerasing || true
-  dnf -y swap libcurl-minimal libcurl-full --allowerasing || true
-  dnf -y install tar gzip docker awscli-2
-  systemctl enable --now docker
+# --- 1. GESTIÓN DE DEPENDENCIAS (EL "HORNEADO") ---
+if [ -f "/etc/ignis-baked" ]; then
+  echo "[user-data] AMI optimizada detectada. Saltando instalaciones de paquetes."
+  systemctl start docker
 else
-  echo "[user-data] non-Amazon Linux, using apt fallback"
-  apt-get update -y
-  apt-get install -y docker.io awscli tar gzip curl
-  systemctl enable --now docker
+  echo "[user-data] AMI base detectada. Ejecutando instalación completa..."
+
+  if grep -qi "Amazon Linux" /etc/os-release; then
+    dnf -y install tar gzip docker awscli-2
+    systemctl enable --now docker
+  else
+    apt-get update -y
+    apt-get install -y docker.io awscli tar gzip curl
+    systemctl enable --now docker
+  fi
+  # NO hacemos el touch aquí todavía, lo hacemos tras validar
 fi
 
+# --- 2. VALIDACIÓN Y PREPARACIÓN DE DOCKER ---
 command -v aws    >/dev/null 2>&1 || { echo "[user-data] ERROR: aws not found";    exit 1; }
 command -v docker >/dev/null 2>&1 || { echo "[user-data] ERROR: docker not found"; exit 1; }
 
-docker --version
-aws --version || true
+# El PULL siempre fuera: garantiza que la imagen esté lista, sea en AMI base o optimizada
+echo "[user-data] pulling image $IMAGE"
+docker pull "$IMAGE"
+
+# Si no existía la señal, la creamos ahora que sabemos que todo (incluido el pull) está OK
+if [ ! -f "/etc/ignis-baked" ]; then
+    touch /etc/ignis-baked
+    echo "[user-data] Señal de optimización creada para futura AMI."
+fi
+
 
 # Env variables
 export REGION='{{REGION}}'
@@ -33,7 +46,6 @@ export BUCKET='{{BUCKET}}'
 export JOB_ID='{{JOB_ID}}'
 export JOB_NAME='{{JOB_NAME}}'
 export BUNDLE_KEY='{{BUNDLE_KEY}}'
-export IMAGE='{{IMAGE}}'
 export CMD='{{CMD}}'
 export IGNIS_SCHEDULER_ENV_JOB="$JOB_ID"
 export IGNIS_JOB_ID="$JOB_ID"
@@ -63,10 +75,6 @@ tar -xzf /tmp/bundle.tar.gz -C /
 echo "[user-data] downloading large payload files from S3..."
 aws s3 sync "s3://${BUCKET}/jobs/${JOB_ID}/payload/large/" "/ignis/dfs/payload/" --quiet || true
 echo "[user-data] large files ready."
-
-# Pull Docker image
-echo "[user-data] pulling image $IMAGE"
-docker pull "$IMAGE"
 
 START_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
 
