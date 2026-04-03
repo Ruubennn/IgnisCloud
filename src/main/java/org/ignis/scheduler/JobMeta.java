@@ -8,6 +8,7 @@ public record JobMeta(
         String bucket,
         String instanceId,
         String image,
+        String bundleKey,
         String cmd,
         int cpus,
         long memory,

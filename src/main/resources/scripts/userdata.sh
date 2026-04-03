@@ -6,26 +6,30 @@ exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&
 echo "[user-data] starting..."
 
 # Dependencies installation
-if grep -qi "Amazon Linux" /etc/os-release; then
-  echo "[user-data] detected Amazon Linux"
-  dnf -y makecache
-  dnf -y update
-  dnf -y swap curl-minimal curl-full --allowerasing || true
-  dnf -y swap libcurl-minimal libcurl-full --allowerasing || true
-  dnf -y install tar gzip docker awscli-2
-  systemctl enable --now docker
-else
-  echo "[user-data] non-Amazon Linux, using apt fallback"
-  apt-get update -y
-  apt-get install -y docker.io awscli tar gzip curl
-  systemctl enable --now docker
-fi
+#if grep -qi "Amazon Linux" /etc/os-release; then
+#  echo "[user-data] detected Amazon Linux"
+#  dnf -y makecache
+#  dnf -y update
+#  dnf -y swap curl-minimal curl-full --allowerasing || true
+#  dnf -y swap libcurl-minimal libcurl-full --allowerasing || true
+#  dnf -y install tar gzip docker awscli-2
+#  systemctl enable --now docker
+#else
+#  echo "[user-data] non-Amazon Linux, using apt fallback"
+#  apt-get update -y
+#  apt-get install -y docker.io awscli tar gzip curl
+#  systemctl enable --now docker
+#fi
 
-command -v aws    >/dev/null 2>&1 || { echo "[user-data] ERROR: aws not found";    exit 1; }
-command -v docker >/dev/null 2>&1 || { echo "[user-data] ERROR: docker not found"; exit 1; }
+#command -v aws    >/dev/null 2>&1 || { echo "[user-data] ERROR: aws not found";    exit 1; }
+#command -v docker >/dev/null 2>&1 || { echo "[user-data] ERROR: docker not found"; exit 1; }
 
+#docker --version
+#aws --version || true
+
+echo "[debug] Comprobación Docker"
 docker --version
-aws --version || true
+echo "[debug] Fin Comprobación"
 
 # Env variables
 export REGION='{{REGION}}'
@@ -37,6 +41,11 @@ export IMAGE='{{IMAGE}}'
 export CMD='{{CMD}}'
 export IGNIS_SCHEDULER_ENV_JOB="$JOB_ID"
 export IGNIS_JOB_ID="$JOB_ID"
+export IGNIS_SUBNET_ID='{{SUBNET_ID}}'
+export IGNIS_SG_ID='{{SG_ID}}'
+export IGNIS_AMI='{{AMI}}'
+export IGNIS_INSTANCE_TYPE='{{INSTANCE_TYPE}}'
+export IGNIS_IAM_INSTANCE_PROFILE='{{IAM_INSTANCE_PROFILE}}'
 
 # Instance ID from metadata
 IID="unknown"
@@ -46,12 +55,21 @@ TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
 if [ -n "$TOKEN" ]; then
   IID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
     http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
+  PRIVATE_IP=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/local-ipv4 || echo "")
 else
   IID=$(curl -fsS http://169.254.169.254/latest/meta-data/instance-id || echo "unknown")
+  PRIVATE_IP=$(curl -fsS http://169.254.169.254/latest/meta-data/local-ipv4 || echo "")
 fi
 
 export IGNIS_SCHEDULER_ENV_CONTAINER="$IID"
 echo "[user-data] instance-id=$IID"
+echo "[user-data] private-ip=$PRIVATE_IP"
+
+# Publish driver IP so executors can find it
+echo "$PRIVATE_IP" | aws --region "$REGION" s3 cp - \
+  "s3://$BUCKET/jobs/$JOB_ID/driver-ip.txt"
+echo "[user-data] driver IP published to S3"
 
 # Bundle and payload download
 echo "[user-data] downloading bundle s3://$BUCKET/$BUNDLE_KEY"
@@ -65,8 +83,8 @@ aws s3 sync "s3://${BUCKET}/jobs/${JOB_ID}/payload/large/" "/ignis/dfs/payload/"
 echo "[user-data] large files ready."
 
 # Pull Docker image
-echo "[user-data] pulling image $IMAGE"
-docker pull "$IMAGE"
+#echo "[user-data] pulling image $IMAGE"
+#docker pull "$IMAGE"
 
 START_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
 
@@ -147,6 +165,11 @@ docker run --rm \
   -e IGNIS_JOB_SOCKETS="/opt/ignis/jobs/$JOB_ID/sockets" \
   -e IGNIS_WDIR="/ignis/dfs/payload" \
   -e IGNIS_JOBS_BUCKET="$BUCKET" \
+  -e IGNIS_SUBNET_ID="$IGNIS_SUBNET_ID" \
+  -e IGNIS_SG_ID="$IGNIS_SG_ID" \
+  -e IGNIS_AMI="$IGNIS_AMI" \
+  -e IGNIS_INSTANCE_TYPE="$IGNIS_INSTANCE_TYPE" \
+  -e IGNIS_IAM_INSTANCE_PROFILE="$IGNIS_IAM_INSTANCE_PROFILE" \
   -v /ignis/dfs:/ignis/dfs \
   -v /var/tmp/ignis-cloud:/var/tmp/ignis-cloud \
   -v /var/run/docker.sock:/var/run/docker.sock \

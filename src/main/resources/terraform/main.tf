@@ -106,6 +106,21 @@ resource "aws_s3_bucket_public_access_block" "ignis_jobs" {
   restrict_public_buckets = true
 }
 
+data "aws_ami" "ignis_base" {
+  most_recent = true
+  owners      = ["self"]   # Solo tus AMIs
+
+  filter {
+    name   = "name"
+    values = ["${var.ignis_ami_name_prefix}*"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
+}
+
 // IAM Role
 //resource "aws_iam_role" "ignis_scheduler_role" {
 //  name = "ignis-scheduler-role"

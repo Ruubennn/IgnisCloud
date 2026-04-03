@@ -21,3 +21,8 @@ output "jobs_bucket_name" {
 //output "aws_iam_instance_profile" {
  // value = aws_iam_instance_profile.ignis_profile.name
 //}
+
+output "ignis_ami_id" {
+  value       = data.aws_ami.ignis_base.id
+  description = "ID de la AMI personalizada para driver y executors"
+}

@@ -213,6 +213,7 @@ public class TerraformManager {
             //outputs.put("iam_role_arn", getOutputValue(root, "iam_role_arn"));
             outputs.put("jobs_bucket_name", getOutputValue(root, "jobs_bucket_name"));
             //outputs.put("aws_iam_instance_profile", getOutputValue(root, "aws_iam_instance_profile"));
+            outputs.put("ignis_ami_id", getOutputValue(root, "ignis_ami_id"));
 
         } catch (Exception e){
             LOGGER.error("Failed to capture Terraform outputs in directory {}", workDir, e);
@@ -293,6 +294,7 @@ public class TerraformManager {
         String subnet = outputs.getOrDefault("subnet_id",        "N/A");
         String sg     = outputs.getOrDefault("sg_id",            "N/A");
         String bucket = outputs.getOrDefault("jobs_bucket_name", "N/A");
+        String ami    = outputs.getOrDefault("ignis_ami_id",     "N/A");
 
         int col1 = 20;
         int col2 = Math.max(50, Math.max(Math.max(vpc.length(), subnet.length()),
@@ -310,6 +312,7 @@ public class TerraformManager {
         System.out.printf((fmt) + "%n", "Subnet ID",        subnet);
         System.out.printf((fmt) + "%n", "Security Group ID", sg);
         System.out.printf((fmt) + "%n", "S3 Bucket",        bucket);
+        System.out.printf((fmt) + "%n", "Custom AMI ID",    ami);
         System.out.println(separator);
         System.out.println();
     }

@@ -35,7 +35,7 @@ public class EC2Operations implements Closeable {
                     .subnetId(subnet)
                     .securityGroupIds(sgId)
                     .iamInstanceProfile(IamInstanceProfileSpecification.builder()
-                            .name(iamInstanceProfile)
+                            .name("LabRole")
                             .build())
                     .instanceInitiatedShutdownBehavior(ShutdownBehavior.TERMINATE)
                     .userData(Base64.getEncoder().encodeToString(userDataScript.getBytes(StandardCharsets.UTF_8)))
