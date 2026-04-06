@@ -296,15 +296,16 @@ public class Cloud implements IScheduler {
             String image = driver.resources().image();
             ami = ec2.resolveAMI();
             cmd = payloadResolver.resolveCommand(driver);
-            String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(), finalJobName, jobId, bucket, bundleKey, image, cmd);
             InstanceType instanceType = ec2.resolveInstanceType(driver);
+
+            String userData = userDataBuilder.buildUserData(awsFactory.getRegion().id(), finalJobName, jobId, bucket, bundleKey, image, cmd, subnet, sg, instanceType.name(), ami);
             instanceId = ec2.createEC2Instance(finalJobName + "-driver", userData, ami, subnet, sg, iamRoleArn, instanceType, iamInstanceProfile);
         } catch (Exception e) {
             throw new ISchedulerException("Failed to launch EC2 instance for job " + jobId, e);
         }
 
         // Save metadata
-        JobMeta meta = new JobMeta(jobId, finalJobName, bucket, instanceId,
+        JobMeta meta = new JobMeta(jobId, finalJobName, bucket, instanceId, bundleKey,
                 driver.resources().image(), cmd,
                 driver.resources().cpus(), driver.resources().memory(),
                 driver.resources().gpu(), driver.resources().args());
@@ -317,7 +318,7 @@ public class Cloud implements IScheduler {
 
         // Wait for results and download
         // TODO: esta es la espera activa (si no convence puede obviarse, pero me permite descargarle al usuario los ficheros)
-        long maxWaitMs = 10 * 60 * 1000; // 10 mins
+        /*long maxWaitMs = 10 * 60 * 1000; // 10 mins
         long start = System.currentTimeMillis();
 
         System.out.println("[ignis-cloud] Job running...");
@@ -358,7 +359,7 @@ public class Cloud implements IScheduler {
                 break;
             }
 
-        }
+        }*/
         LOGGER.info("Created job with name {} and id {}", finalJobName, jobId);
         return jobId;
     }
@@ -473,49 +474,96 @@ public class Cloud implements IScheduler {
         throw new UnsupportedOperationException();
     }
 
+
     @Override
     public IClusterInfo createCluster(String job, IClusterRequest request) throws ISchedulerException {
         LOGGER.info("createCluster job {} instances={}", job, request.instances());
 
-        int instances = request.instances();
-        var containerIds = new ArrayList<String>();
-
-        // Lanzar executors
-        for (int i = 0; i < instances; i++) {
-            String containerName = launchExecutor(job, i, request);
-            containerIds.add(containerName);
+        JobMeta meta = resolveJobMeta(job);
+        if (meta == null) {
+            throw new ISchedulerException("Cannot create cluster: job meta not found for " + job);
         }
 
-        // Esperar a que el executor esté listo en el puerto 1963
-        int maxWait = 30;
-        boolean ready = false;
-        for (int attempt = 0; attempt < maxWait; attempt++) {
-            try (var socket = new Socket("localhost", 1963)) {
-                ready = true;
-                break;
-            } catch (Exception e) {
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e1) {
-                    Thread.currentThread().interrupt();
-                    throw new ISchedulerException("Interrupted while waiting for executor port", e1);
-                }
-            }
+        String region = awsFactory.getRegion().id();
+        String subnet = System.getenv("IGNIS_SUBNET_ID");
+        String sg = System.getenv("IGNIS_SG_ID");
+        String ami = System.getenv("IGNIS_AMI");
+        String instanceTypeStr = System.getenv("IGNIS_INSTANCE_TYPE");
+
+        InstanceType instanceType = null;
+        if (instanceTypeStr != null && !instanceTypeStr.isBlank()) {
+            String parsed = instanceTypeStr.toLowerCase().replaceAll("_", ".");
+            instanceType = InstanceType.fromValue(parsed);
         }
 
-        if (!ready) {
-            throw new ISchedulerException("Executor never became ready on port 1963 after " + maxWait + " seconds");
+        if (subnet == null || sg == null || ami == null || instanceType == null) {
+            subnet = terraformManager.requireOutput("subnet_id");
+            sg = terraformManager.requireOutput("sg_id");
+            ami = ec2.resolveAMI();
+            instanceType = ec2.resolveInstanceType(request);
         }
 
-        // Construir lista de containers
+        var pending = new ArrayList<PendingExecutor>();
         var containers = new ArrayList<IContainerInfo>();
-        for (int i = 0; i < containerIds.size(); i++) {
-            containers.add(buildExecutorContainerInfo(containerIds.get(i), job, request));
+
+        // FASE 1: lanzar todas las instancias EC2
+        for (int i = 0; i < request.instances(); i++) {
+            String containerName = job + "-executor-" + i;
+
+            List<String> executorArgs = new ArrayList<>(
+                    request.resources().args() != null ? request.resources().args() : List.of()
+            );
+
+            if (executorArgs.size() >= 3
+                    && "ignis-sshserver".equals(executorArgs.get(0))
+                    && "executor".equals(executorArgs.get(1))) {
+                executorArgs.set(2, "0");
+            }
+
+            String userData = userDataBuilder.buildExecutorUserData(
+                    region,
+                    job,
+                    containerName,
+                    meta.bucket(),
+                    meta.bundleKey(),
+                    meta.image(),
+                    request.resources().env(),
+                    executorArgs
+            );
+
+            String instanceId = ec2.createEC2Instance(
+                    containerName, userData, ami, subnet, sg, "", instanceType, "", job
+            );
+
+            LOGGER.info("Executor {} instance requested: instanceId={}", containerName, instanceId);
+            pending.add(new PendingExecutor(containerName, instanceId));
+        }
+
+        // FASE 2: esperar a que cada executor publique ready.json
+        for (PendingExecutor p : pending) {
+            ec2.waitUntilRunning(p.instanceId);
+            String privateIp = ec2.waitForPrivateIp(p.instanceId);
+
+            LOGGER.info("Executor {} running: instanceId={} ec2Ip={}",
+                    p.containerName, p.instanceId, privateIp);
+
+            LOGGER.warn("WAITING READY JSON for executor {} job {}", p.containerName, job);
+            ReadyInfo ready = waitForExecutorReady(meta, p.containerName);
+            LOGGER.warn("READY JSON OK for executor {} -> {}:{}",
+                    p.containerName, ready.ip, ready.port);
+
+            containers.add(buildExecutorContainerInfo(
+                    p.instanceId,
+                    p.containerName,
+                    ready,
+                    job,
+                    request
+            ));
         }
 
         return IClusterInfo.builder()
                 .id(request.name())
-                .instances(instances)
+                .instances(request.instances())
                 .containers(containers)
                 .build();
     }

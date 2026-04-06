@@ -165,7 +165,7 @@ public class EC2Operations implements Closeable {
         String userAMI = System.getenv("IGNIS_AMI");
         if(userAMI != null && !userAMI.isBlank()) return userAMI.trim();
 
-        try{
+        /*try{
             DescribeImagesRequest request = DescribeImagesRequest.builder()
                     .owners("self")
                     .filters(Filter.builder()
@@ -183,7 +183,7 @@ public class EC2Operations implements Closeable {
             }
         } catch (Exception e) {
             LOGGER.warn("No se pudo buscar la AMI personalizada: {}. Usando fallback...", e.getMessage());
-        }
+        }*/
 
         String paramName = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64";
 
