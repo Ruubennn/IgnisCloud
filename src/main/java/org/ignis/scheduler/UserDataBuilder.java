@@ -2,9 +2,8 @@ package org.ignis.scheduler;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class UserDataBuilder {
 
@@ -30,7 +29,7 @@ public class UserDataBuilder {
         return renderTemplate(template, vars);
     }
 
-    public String buildExecutorUserData(String region, String jobId, String containerName, String bucket, String bundleKey, String image, Map<String, String> env, List<String> args) throws ISchedulerException{
+    /*public String buildExecutorUserData(String region, String jobId, String containerName, String bucket, String bundleKey, String image, Map<String, String> env, List<String> args) throws ISchedulerException{
         String template = loadTemplate(EXECUTOR_TEMPLATE_PATH);
 
         StringBuilder envFlags = new StringBuilder();
@@ -48,6 +47,77 @@ public class UserDataBuilder {
         vars.put("IMAGE", shellEscapeSingleQuotes(image));
         vars.put("EXECUTOR_ENV", envFlags.toString());
         vars.put("EXECUTOR_CMD", String.join(" ", args));
+
+        System.out.println("PRUEBA: " + vars.toString());
+
+        return renderTemplate(template, vars);
+    }*/
+
+    public String buildExecutorUserData(
+            String region,
+            String jobId,
+            String containerName,
+            String bucket,
+            String bundleKey,
+            String image,
+            Map<String, String> env,
+            List<String> args
+    ) throws ISchedulerException {
+        String template = loadTemplate(EXECUTOR_TEMPLATE_PATH);
+
+        Map<String, String> safeEnv = new TreeMap<>();
+        if (env != null) {
+            for (var e : env.entrySet()) {
+                if (e == null || e.getKey() == null) continue;
+                String key = e.getKey().trim();
+                if (key.isEmpty()) continue;
+                String value = e.getValue() == null ? "" : e.getValue();
+                safeEnv.put(key, value);
+            }
+        }
+
+        StringBuilder envFlags = new StringBuilder();
+        for (var e : safeEnv.entrySet()) {
+            envFlags.append("  -e ")
+                    .append(e.getKey())
+                    .append("='")
+                    .append(shellEscapeSingleQuotes(e.getValue()))
+                    .append("' \\\n");
+        }
+
+        List<String> safeArgs = args == null
+                ? List.of()
+                : args.stream().filter(Objects::nonNull).toList();
+
+        if (safeArgs.isEmpty()) {
+            throw new ISchedulerException("Executor args are empty in buildExecutorUserData()");
+        }
+
+        String executorCmd = safeArgs.stream()
+                .map(arg -> "'" + shellEscapeSingleQuotes(arg) + "'")
+                .collect(Collectors.joining(" "));
+
+        Map<String, String> vars = new HashMap<>();
+        vars.put("REGION", shellEscapeSingleQuotes(region));
+        vars.put("JOB_ID", shellEscapeSingleQuotes(jobId));
+        vars.put("CONTAINER_NAME", shellEscapeSingleQuotes(containerName));
+        vars.put("BUCKET", shellEscapeSingleQuotes(bucket));
+        vars.put("BUNDLE_KEY", shellEscapeSingleQuotes(bundleKey));
+        vars.put("IMAGE", shellEscapeSingleQuotes(image));
+        vars.put("EXECUTOR_ENV", envFlags.toString());
+        vars.put("EXECUTOR_CMD", executorCmd);
+
+        System.out.println("===== buildExecutorUserData DEBUG START =====");
+        System.out.println("REGION=" + region);
+        System.out.println("JOB_ID=" + jobId);
+        System.out.println("CONTAINER_NAME=" + containerName);
+        System.out.println("BUCKET=" + bucket);
+        System.out.println("BUNDLE_KEY=" + bundleKey);
+        System.out.println("IMAGE=" + image);
+        System.out.println("ENV_KEYS=" + safeEnv.keySet());
+        System.out.println("ARGS_RAW=" + safeArgs);
+        System.out.println("EXECUTOR_CMD_RENDERED=" + executorCmd);
+        System.out.println("===== buildExecutorUserData DEBUG END =====");
 
         return renderTemplate(template, vars);
     }

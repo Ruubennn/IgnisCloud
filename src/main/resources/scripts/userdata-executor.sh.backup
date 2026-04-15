@@ -1,0 +1,130 @@
+#!/bin/bash
+set -euo pipefail
+
+echo "[executor] starting..."
+
+# Detect OS
+if grep -qi "amzn" /etc/os-release; then
+  echo "[executor] detected Amazon Linux"
+  yum update -y || true
+  yum install -y docker awscli || true
+else
+  echo "[executor] unknown OS"
+fi
+
+systemctl enable docker
+systemctl start docker
+
+REGION="{{REGION}}"
+JOB_ID="{{JOB_ID}}"
+CONTAINER_NAME="{{CONTAINER_NAME}}"
+BUCKET="{{BUCKET}}"
+BUNDLE_KEY="{{BUNDLE_KEY}}"
+IMAGE="{{IMAGE}}"
+
+echo "[executor] instance-id=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+
+# Descargar bundle
+echo "[executor] downloading bundle s3://$BUCKET/$BUNDLE_KEY"
+mkdir -p /opt/ignis/jobs/$JOB_ID
+cd /opt/ignis/jobs/$JOB_ID
+
+aws --region "$REGION" s3 cp "s3://$BUCKET/$BUNDLE_KEY" bundle.tar.gz
+tar -xzf bundle.tar.gz
+
+echo "[executor] downloading large payload files from S3..."
+# (si tienes lógica aquí, la dejas igual)
+echo "[executor] large files ready."
+
+# Pull imagen
+echo "[executor] pulling image $IMAGE"
+docker pull "$IMAGE"
+
+# Lanzar contenedor
+echo "[executor] launching executor container: $CONTAINER_NAME"
+
+set +e
+CID=$(docker run -d \
+  --name "$CONTAINER_NAME" \
+  --network host \
+  -e IGNIS_JOB_ID="$JOB_ID" \
+  -e IGNIS_SCHEDULER_ENV_JOB="$JOB_ID" \
+  -e IGNIS_SCHEDULER_ENV_CONTAINER="$CONTAINER_NAME" \
+  -e IGNIS_JOB_DIR="/opt/ignis/jobs/$JOB_ID" \
+  -e IGNIS_HOME=/opt/ignis \
+  -e IGNIS_WDIR="/ignis/dfs/payload" \
+{{EXECUTOR_ENV}} \
+  -v /ignis/dfs:/ignis/dfs \
+  -v "/opt/ignis/jobs/$JOB_ID:/opt/ignis/jobs/$JOB_ID" \
+  "$IMAGE" {{EXECUTOR_CMD}})
+RC=$?
+set -e
+
+if [ $RC -ne 0 ] || [ -z "$CID" ]; then
+  echo "[executor] ERROR: docker run failed"
+  exit 1
+fi
+
+echo "[executor] container-id=$CID"
+
+# Esperar a que esté corriendo y escuche en 1963
+READY=0
+for i in $(seq 1 120); do
+  RUNNING=$(docker inspect -f '{{.State.Running}}' "$CID" 2>/dev/null || echo "false")
+  if [ "$RUNNING" != "true" ]; then
+    echo "[executor] ERROR: container died before becoming ready"
+    docker logs "$CID" || true
+    exit 1
+  fi
+
+  if ss -ltn | grep -q ':1963 '; then
+    echo "[executor] executor ready on port 1963"
+    READY=1
+    break
+  fi
+
+  sleep 2
+done
+
+if [ "$READY" -ne 1 ]; then
+  echo "[executor] ERROR: timeout waiting for port 1963"
+  docker logs "$CID" || true
+  exit 1
+fi
+
+# Mostrar sockets (debug útil)
+echo "[executor] sockets on 1963:"
+ss -ltnp | grep 1963 || true
+
+# 🔥 SUBIDA DEL READY.JSON A S3 (CLAVE)
+IID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+
+READY_JSON="/tmp/ready.json"
+cat > "$READY_JSON" <<EOF
+{
+  "state": "READY",
+  "instanceId": "$IID",
+  "containerName": "$CONTAINER_NAME",
+  "jobId": "$JOB_ID",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+
+echo "[executor] uploading ready marker to S3..."
+
+aws --region "$REGION" s3 cp "$READY_JSON" \
+  "s3://$BUCKET/jobs/$JOB_ID/executors/$CONTAINER_NAME/ready.json"
+
+echo "[executor] ready marker uploaded"
+
+# Mantener instancia viva mientras viva el contenedor
+set +e
+docker wait "$CID"
+RC=$?
+set -e
+
+echo "[executor] container finished with rc=$RC"
+docker logs "$CID" || true
+
+shutdown -h now
+exit "$RC"

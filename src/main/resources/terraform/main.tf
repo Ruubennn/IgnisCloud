@@ -50,30 +50,50 @@ resource "aws_route_table_association" "ignis_route_assoc" {
   route_table_id = aws_route_table.ignis_route_table.id
 }
 
-// Security Group
 resource "aws_security_group" "ignis_sg" {
-  vpc_id = aws_vpc.ignis_vpc.id
-  name = "ignis-sg"
+  vpc_id      = aws_vpc.ignis_vpc.id
+  name        = "ignis-sg"
   description = "Security group for Ignis scheduler instances"
 
   ingress {
-    from_port = 22
-    to_port = 22
-    protocol = "tcp"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   ingress {
-    from_port = 80
-    to_port   = 80
-    protocol  = "tcp"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    from_port   = 20000
+    to_port     = 20100
+    protocol    = "tcp"
+    self        = true
+  }
+
+  ingress {
+    from_port = 1963
+    to_port   = 1963
+    protocol  = "tcp"
+    self      = true
+  }
+
+  ingress {
+    from_port = 18080
+    to_port   = 18080
+    protocol  = "tcp"
+    self      = true
+  }
+
   egress {
-    from_port = 0
-    to_port = 0
-    protocol = "-1"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -81,7 +101,6 @@ resource "aws_security_group" "ignis_sg" {
     Name = "ignis-sg"
   }
 }
-
 resource "random_string" "bucket_suffix" {
   length = 8
   special = false

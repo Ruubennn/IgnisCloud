@@ -42,6 +42,19 @@ export IGNIS_SG_ID='{{SG_ID}}'
 export IGNIS_AMI='{{AMI}}'
 export IGNIS_INSTANCE_TYPE='{{INSTANCE_TYPE}}'
 
+echo "[DEBUG] Variables de entorno:"
+echo "  REGION=$REGION"
+echo "  BUCKET=$BUCKET"
+echo "  JOB_ID=$JOB_ID"
+echo "  JOB_NAME=$JOB_NAME"
+echo "  BUNDLE_KEY=$BUNDLE_KEY"
+echo "  IMAGE=$IMAGE"
+echo "  CMD=$CMD"
+echo "  IGNIS_SUBNET_ID=$IGNIS_SUBNET_ID"
+echo "  IGNIS_SG_ID=$IGNIS_SG_ID"
+echo "  IGNIS_AMI=$IGNIS_AMI"
+echo "  IGNIS_INSTANCE_TYPE=$IGNIS_INSTANCE_TYPE"
+
 # Instance ID from metadata
 IID="unknown"
 TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
@@ -60,17 +73,24 @@ echo "[user-data] instance-id=$IID"
 # Bundle and payload download
 echo "[user-data] downloading bundle s3://$BUCKET/$BUNDLE_KEY"
 aws --region "$REGION" s3 cp "s3://$BUCKET/$BUNDLE_KEY" /tmp/bundle.tar.gz
+echo "[DEBUG] bundle descargado OK, tamaño: $(du -sh /tmp/bundle.tar.gz | cut -f1)"
 
 mkdir -p /ignis
 tar -xzf /tmp/bundle.tar.gz -C /
+echo "[DEBUG] bundle extraído OK"
+echo "[DEBUG] contenido de /ignis:"
+find /ignis -maxdepth 4 | head -60 || true
 
 echo "[user-data] downloading large payload files from S3..."
 aws s3 sync "s3://${BUCKET}/jobs/${JOB_ID}/payload/large/" "/ignis/dfs/payload/" --quiet || true
 echo "[user-data] large files ready."
+echo "[DEBUG] contenido de /ignis/dfs/payload/:"
+find /ignis/dfs/payload/ -maxdepth 3 | head -40 || true
 
 # Pull Docker image
 echo "[user-data] pulling image $IMAGE"
 docker pull "$IMAGE"
+echo "[DEBUG] imagen pulled OK"
 
 START_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
 
@@ -87,8 +107,23 @@ cleanup_and_finish() {
 
   # Upload execution logs
   if [ -f /tmp/out.txt ]; then
+    echo "[DEBUG] subiendo /tmp/out.txt a S3..."
     aws --region "$REGION" s3 cp /tmp/out.txt \
       "s3://$BUCKET/jobs/$JOB_ID/out.txt" || true
+  fi
+
+  # Upload driver log
+  if [ -f /tmp/driver.log ]; then
+    echo "[DEBUG] subiendo /tmp/driver.log a S3..."
+    aws --region "$REGION" s3 cp /tmp/driver.log \
+      "s3://$BUCKET/jobs/$JOB_ID/driver.log" || true
+  fi
+
+  # Upload backend log
+  if [ -f /tmp/backend.log ]; then
+    echo "[DEBUG] subiendo /tmp/backend.log a S3..."
+    aws --region "$REGION" s3 cp /tmp/backend.log \
+      "s3://$BUCKET/jobs/$JOB_ID/backend.log" || true
   fi
 
   # Upload job results
@@ -135,7 +170,15 @@ chmod 777 "/opt/ignis/jobs/$JOB_ID/sockets"
 
 # Execute container
 echo "[user-data] launching Ignis backend + driver in container"
-echo "[user-data] CMD=$CMD"
+echo "[DEBUG] CMD que se va a ejecutar dentro del contenedor:"
+echo "  $CMD"
+echo "[DEBUG] IMAGE=$IMAGE"
+
+# URL HealthCheck
+mkdir -p /tmp/ignis-health
+python3 -m http.server 18080 --bind 0.0.0.0 --directory /tmp/ignis-health \
+  > /tmp/driver-health.log 2>&1 &
+echo "[container] driver health server up on 18080"
 
 set +e
 
@@ -161,54 +204,90 @@ docker run --rm \
   -v "/opt/ignis/jobs/$JOB_ID/sockets:/opt/ignis/jobs/$JOB_ID/sockets" \
   -v /usr/bin/docker:/usr/bin/docker \
   "$IMAGE" /bin/bash -lc '
-    echo "[container] preparing environment..."
+    echo "[container] ============================================"
+    echo "[container] PID de este bash wrapper: $$"
+    echo "[container] preparando environment..."
     mkdir -p /var/tmp/ignis/jobs
     ln -sf /var/tmp/ignis-cloud/jobs/'"$JOB_ID"'.json /var/tmp/ignis/jobs/'"$JOB_ID"'.json
     chmod -R 777 /var/tmp/ignis
     chmod 777 /tmp
 
-    echo "[container] starting backend..."
+    echo "[container] comprobando binarios disponibles:"
+    which python3 && python3 --version || echo "[container] WARN: python3 no encontrado"
+    which python  && python  --version || echo "[container] WARN: python no encontrado"
+    ls /opt/ignis/bin/ || echo "[container] WARN: /opt/ignis/bin/ no existe"
+
+    echo "[container] contenido de /ignis/dfs/payload/:"
+    find /ignis/dfs/payload/ -maxdepth 3 | head -40 || true
+
+    echo "[container] variables de entorno relevantes:"
+    env | grep -E "IGNIS|JOB|CMD" | sort || true
+
+    echo "[container] ============================================"
+    echo "[container] arrancando backend..."
     /opt/ignis/bin/ignis-backend > /tmp/backend.log 2>&1 &
     BACKEND_PID=$!
+    echo "[container] backend lanzado con PID=$BACKEND_PID (padre bash PID=$$)"
 
-    echo "[container] waiting for backend socket..."
+    echo "[container] esperando socket del backend..."
     SOCK_PATH=""
     for i in $(seq 1 30); do
       SOCK_PATH=$(find /tmp /var/tmp /opt/ignis -name "*.sock" 2>/dev/null | head -1)
       if [ -n "$SOCK_PATH" ]; then
-        echo "[container] socket found at $SOCK_PATH after ${i}s"
+        echo "[container] socket encontrado en $SOCK_PATH tras ${i}s"
         break
       fi
       if ! kill -0 $BACKEND_PID 2>/dev/null; then
-        echo "[container] ERROR: backend died before socket appeared"
+        echo "[container] ERROR: backend murió antes de que apareciese el socket"
         echo "===== BACKEND LOG ====="
         cat /tmp/backend.log
         echo "===== END BACKEND LOG ====="
         exit 1
       fi
+      echo "[container] esperando socket... intento $i/30 (backend PID=$BACKEND_PID vivo)"
       sleep 1
     done
 
     if [ -z "$SOCK_PATH" ]; then
-      echo "[container] ERROR: socket never appeared after 30s"
+      echo "[container] ERROR: socket nunca apareció tras 30s"
       echo "===== BACKEND LOG ====="
       cat /tmp/backend.log
       echo "===== END BACKEND LOG ====="
       exit 1
     fi
 
-    echo "[container] backend ready, launching driver..."
-    '"$CMD"'
+    echo "[container] ============================================"
+    echo "[container] árbol de procesos antes de lanzar el driver:"
+    ps -eo pid,ppid,cmd --forest 2>/dev/null || ps -eo pid,ppid,cmd
+    echo "[container] PPid del backend según /proc:"
+    cat /proc/$BACKEND_PID/status 2>/dev/null | grep -E "Pid|PPid|Name" || true
+    echo "[container] ============================================"
+
+    echo "[container] backend listo, lanzando driver..."
+    echo "[container] CMD a ejecutar: '"$CMD"'"
+    echo "[container] timestamp arranque driver: $(date -u)"
+
+    '"$CMD"' > /tmp/driver.log 2>&1
     DRIVER_RC=$?
 
+    echo "[container] ============================================"
+    echo "[container] driver terminó con rc=$DRIVER_RC en $(date -u)"
+    echo "===== DRIVER LOG ====="
+    cat /tmp/driver.log
+    echo "===== END DRIVER LOG ====="
     echo "===== BACKEND LOG ====="
     cat /tmp/backend.log
     echo "===== END BACKEND LOG ====="
+    echo "[container] ============================================"
 
     exit $DRIVER_RC
   ' > /tmp/out.txt 2>&1
 
 rc=$?
 set -e
+
+echo "[user-data] docker run terminó con rc=$rc"
+echo "[user-data] últimas 50 líneas de /tmp/out.txt:"
+tail -50 /tmp/out.txt || true
 
 cleanup_and_finish "$rc"
